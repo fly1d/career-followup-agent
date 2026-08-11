@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { createFollowUpRepository, DEMO_WORKSPACE_ID } from "./repository";
+import { createFollowUpRepository } from "./repository";
 
 type Repository = ReturnType<typeof createFollowUpRepository>;
 
@@ -15,9 +15,6 @@ export function getRepository() {
       configuredPath,
     );
     globalDatabase.followUpRepository = createFollowUpRepository(databasePath);
-    globalDatabase.followUpRepository.seedDemoWorkspace();
   }
   return globalDatabase.followUpRepository;
 }
-
-export { DEMO_WORKSPACE_ID };

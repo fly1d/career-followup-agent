@@ -1,5 +1,10 @@
 import type { z } from "zod";
 import {
+  AuthenticationError,
+  DuplicateAccountError,
+  InvalidCredentialsError,
+} from "./errors";
+import {
   RepositoryConflictError,
   RepositoryNotFoundError,
 } from "./repository";
@@ -35,6 +40,24 @@ export async function parseRequest<T extends z.ZodType>(
 }
 
 export function errorResponse(error: unknown) {
+  if (error instanceof AuthenticationError) {
+    return Response.json(
+      { error: { code: "authentication_required", message: "登录已失效，请重新登录。" } },
+      { status: 401 },
+    );
+  }
+  if (error instanceof InvalidCredentialsError) {
+    return Response.json(
+      { error: { code: "invalid_credentials", message: "邮箱或密码不正确。" } },
+      { status: 401 },
+    );
+  }
+  if (error instanceof DuplicateAccountError) {
+    return Response.json(
+      { error: { code: "account_exists", message: "这个邮箱已经注册，请直接登录。" } },
+      { status: 409 },
+    );
+  }
   if (error instanceof RepositoryNotFoundError) {
     return Response.json(
       { error: { code: "not_found", message: "请求的记录不存在。" } },

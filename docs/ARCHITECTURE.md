@@ -21,26 +21,38 @@ flowchart LR
   A --> S["Object Storage"]
 ```
 
-当前 M1A 使用相同仓储边界下的 Node.js SQLite 和固定演示工作区，数据库文件默认位于 `.data/followup.db`。它用于验证服务端数据流和可靠性规则，不是生产多用户架构。
+当前 M1B 使用相同仓储边界下的 Node.js SQLite，数据库文件默认位于 `.data/followup.db`。账号、成员关系和会话已经持久化，每个账号创建独立工作区；SQLite 用于验证认证、租户数据流和可靠性规则，不是生产多用户存储。
 
 ## 3. 代码边界
 
 - `src/domain`：纯业务规则，不依赖 React、数据库或模型 SDK。
 - `src/components`：产品界面和交互状态。
 - `src/data`：初始化本地工作区所需的演示数据。
-- `src/server`：数据库迁移、仓储、输入验证和 HTTP 错误边界。
-- `src/app/api`：健康检查、工作区、机会、追问和设置接口。
+- `src/server`：数据库迁移、仓储、密码哈希、会话、输入验证和 HTTP 错误边界。
+- `src/app/api`：认证、健康检查、工作区、机会、追问和设置接口。
 - `tests`：跨页面浏览器冒烟测试。
 
 ## 3.1 当前 API
 
 - `GET /api/health`：数据库就绪检查。
-- `GET /api/workspace`：读取当前单工作区快照。
+- `POST /api/auth/register`：创建账号、隔离工作区和会话。
+- `POST /api/auth/login`：验证密码并轮换为新的会话令牌。
+- `POST /api/auth/logout`：撤销数据库会话并清除 Cookie。
+- `GET /api/auth/session`：读取最小化的当前账号 DTO。
+- `GET /api/workspace`：读取当前会话所属工作区快照。
 - `POST /api/opportunities`：创建机会及首次追问计划。
 - `PATCH /api/follow-ups/:id`：记录发送、延后或跳过。
 - `PATCH /api/settings`：保存求职目标和追问规则。
 
-这些接口在 M1B 加入身份认证前均视为本地开发接口。
+除健康检查和认证入口外，业务接口都必须先验证数据库会话，再从成员关系解析工作区。客户端不能指定或切换工作区 ID。
+
+## 3.2 认证与会话
+
+- 密码使用 Node.js scrypt、随机盐和恒定时间比较，数据库不保存明文密码。
+- 浏览器保存 256 位随机不透明令牌；数据库只保存 SHA-256 摘要。
+- 会话 Cookie 为 HttpOnly、SameSite=Lax、Path=/，生产模式启用 Secure，默认 30 天过期。
+- 登录失败对不存在账号和错误密码使用相同响应，并执行等价的密码派生工作。
+- 退出同时删除数据库会话与浏览器 Cookie；过期会话不能读取任何业务数据。
 
 ## 4. 核心数据实体
 

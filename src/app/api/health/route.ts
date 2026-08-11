@@ -1,11 +1,11 @@
-import { getRepository, DEMO_WORKSPACE_ID } from "@/server/database";
+import { getRepository } from "@/server/database";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export function GET() {
   try {
-    getRepository().getWorkspace(DEMO_WORKSPACE_ID);
+    getRepository().checkHealth();
     return Response.json({
       status: "ok",
       service: "career-followup-agent",

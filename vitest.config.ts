@@ -16,8 +16,10 @@ export default defineConfig({
       reporter: ["text", "json", "html"],
       include: [
         "src/domain/**/*.ts",
+        "src/server/auth.ts",
         "src/server/repository.ts",
         "src/server/http.ts",
+        "src/server/password.ts",
         "src/server/schemas.ts",
       ],
       thresholds: {

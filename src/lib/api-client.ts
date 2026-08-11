@@ -15,6 +15,11 @@ export interface NewOpportunityDraft {
   salary: string;
 }
 
+export interface AccountUser {
+  email: string;
+  displayName: string;
+}
+
 interface ApiErrorBody {
   error?: { message?: string };
 }
@@ -69,4 +74,18 @@ export function saveCandidateSettings(settings: CandidateSettings) {
     method: "PATCH",
     body: JSON.stringify(settings),
   });
+}
+
+export function authenticateAccount(
+  mode: "login" | "register",
+  input: { email: string; password: string; displayName?: string },
+) {
+  return requestJson<{ user: AccountUser; expiresAt: string }>(
+    `/api/auth/${mode}`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+export function logoutAccount() {
+  return requestJson<{ success: true }>("/api/auth/logout", { method: "POST" });
 }

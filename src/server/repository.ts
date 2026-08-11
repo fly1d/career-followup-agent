@@ -37,6 +37,25 @@ export interface NewOpportunityInput {
   salary: string;
 }
 
+export interface PublicUser {
+  id: string;
+  email: string;
+  displayName: string;
+}
+
+export interface AccountIdentity {
+  user: PublicUser;
+  workspaceId: string;
+}
+
+export interface PasswordUserRecord extends AccountIdentity {
+  passwordHash: string;
+}
+
+export interface AuthenticatedSession extends AccountIdentity {
+  expiresAt: string;
+}
+
 export type FollowUpMutation =
   | { action: "mark_sent"; message: string }
   | { action: "snooze" }
@@ -45,12 +64,7 @@ export type FollowUpMutation =
 export class RepositoryNotFoundError extends Error {}
 export class RepositoryConflictError extends Error {}
 
-const schema = `
-  CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL
-  );
-
+const initialSchema = `
   CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
@@ -137,6 +151,44 @@ const schema = `
     ON audit_events(workspace_id, created_at);
 `;
 
+const authenticationSchema = `
+  CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE workspace_members (
+    workspace_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, user_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX workspace_members_user_idx
+    ON workspace_members(user_id, created_at);
+
+  CREATE TABLE sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (workspace_id, user_id)
+      REFERENCES workspace_members(workspace_id, user_id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX sessions_user_expires_idx
+    ON sessions(user_id, expires_at);
+`;
+
 function mapOpportunity(row: DatabaseRow): Opportunity {
   return {
     id: String(row.id),
@@ -199,17 +251,30 @@ export class FollowUpRepository {
   }
 
   private migrate() {
-    this.database.exec(schema);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+    `);
+    this.applyMigration(1, initialSchema);
+    this.applyMigration(2, authenticationSchema);
+  }
+
+  private applyMigration(version: number, statements: string) {
     const applied = this.database
-      .prepare("SELECT version FROM schema_migrations WHERE version = 1")
-      .get();
-    if (!applied) {
+      .prepare("SELECT version FROM schema_migrations WHERE version = ?")
+      .get(version);
+    if (applied) return;
+
+    this.transaction(() => {
+      this.database.exec(statements);
       this.database
         .prepare(
-          "INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)",
+          "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
         )
-        .run(new Date().toISOString());
-    }
+        .run(version, new Date().toISOString());
+    });
   }
 
   seedDemoWorkspace(now = new Date()) {
@@ -218,7 +283,6 @@ export class FollowUpRepository {
       .get(DEMO_WORKSPACE_ID);
     if (exists) return;
 
-    const { followUps, opportunities } = createDemoData(now);
     const timestamp = now.toISOString();
 
     this.transaction(() => {
@@ -227,23 +291,149 @@ export class FollowUpRepository {
           "INSERT INTO workspaces(id, display_name, created_at) VALUES(?, ?, ?)",
         )
         .run(DEMO_WORKSPACE_ID, "我的求职计划", timestamp);
-
-      for (const opportunity of opportunities) {
-        this.insertOpportunity(DEMO_WORKSPACE_ID, opportunity, timestamp);
-      }
-      for (const followUp of followUps) {
-        this.insertFollowUp(DEMO_WORKSPACE_ID, followUp, timestamp);
-      }
-      this.writeSettings(DEMO_WORKSPACE_ID, defaultCandidateSettings, timestamp);
-      this.audit(
-        DEMO_WORKSPACE_ID,
-        "workspace.seeded",
-        "workspace",
-        DEMO_WORKSPACE_ID,
-        { opportunities: opportunities.length, followUps: followUps.length },
-        timestamp,
-      );
+      this.seedWorkspaceData(DEMO_WORKSPACE_ID, now, false);
     });
+  }
+
+  createAccount(
+    input: { email: string; displayName: string; passwordHash: string },
+    now = new Date(),
+  ): AccountIdentity {
+    const email = input.email.trim().toLowerCase();
+    const duplicate = this.database
+      .prepare("SELECT id FROM users WHERE email = ?")
+      .get(email);
+    if (duplicate) throw new RepositoryConflictError("Email already exists");
+
+    const userId = randomUUID();
+    const workspaceId = randomUUID();
+    const timestamp = now.toISOString();
+
+    try {
+      this.transaction(() => {
+        this.database
+          .prepare(
+            `INSERT INTO users(
+              id, email, display_name, password_hash, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            userId,
+            email,
+            input.displayName,
+            input.passwordHash,
+            timestamp,
+            timestamp,
+          );
+        this.database
+          .prepare(
+            "INSERT INTO workspaces(id, display_name, created_at) VALUES(?, ?, ?)",
+          )
+          .run(workspaceId, `${input.displayName}的求职计划`, timestamp);
+        this.database
+          .prepare(
+            `INSERT INTO workspace_members(workspace_id, user_id, role, created_at)
+             VALUES(?, ?, 'owner', ?)`,
+          )
+          .run(workspaceId, userId, timestamp);
+        this.seedWorkspaceData(workspaceId, now, true);
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("UNIQUE constraint failed: users.email")
+      ) {
+        throw new RepositoryConflictError("Email already exists");
+      }
+      throw error;
+    }
+
+    return {
+      user: { id: userId, email, displayName: input.displayName },
+      workspaceId,
+    };
+  }
+
+  findUserByEmail(email: string): PasswordUserRecord | null {
+    const row = this.database
+      .prepare(
+        `SELECT
+          users.id, users.email, users.display_name, users.password_hash,
+          workspace_members.workspace_id
+         FROM users
+         JOIN workspace_members ON workspace_members.user_id = users.id
+         WHERE users.email = ?
+         ORDER BY workspace_members.created_at ASC
+         LIMIT 1`,
+      )
+      .get(email.trim().toLowerCase()) as DatabaseRow | undefined;
+    if (!row) return null;
+
+    return {
+      user: {
+        id: String(row.id),
+        email: String(row.email),
+        displayName: String(row.display_name),
+      },
+      workspaceId: String(row.workspace_id),
+      passwordHash: String(row.password_hash),
+    };
+  }
+
+  createSession(
+    identity: AccountIdentity,
+    tokenHash: string,
+    expiresAt: Date,
+    now = new Date(),
+  ) {
+    this.database
+      .prepare(
+        `INSERT INTO sessions(
+          token_hash, user_id, workspace_id, expires_at, created_at
+        ) VALUES(?, ?, ?, ?, ?)`,
+      )
+      .run(
+        tokenHash,
+        identity.user.id,
+        identity.workspaceId,
+        expiresAt.toISOString(),
+        now.toISOString(),
+      );
+  }
+
+  getSession(tokenHash: string, now = new Date()): AuthenticatedSession | null {
+    const row = this.database
+      .prepare(
+        `SELECT
+          users.id, users.email, users.display_name,
+          sessions.workspace_id, sessions.expires_at
+         FROM sessions
+         JOIN users ON users.id = sessions.user_id
+         JOIN workspace_members
+           ON workspace_members.user_id = sessions.user_id
+          AND workspace_members.workspace_id = sessions.workspace_id
+         WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
+      )
+      .get(tokenHash, now.toISOString()) as DatabaseRow | undefined;
+    if (!row) return null;
+
+    return {
+      user: {
+        id: String(row.id),
+        email: String(row.email),
+        displayName: String(row.display_name),
+      },
+      workspaceId: String(row.workspace_id),
+      expiresAt: String(row.expires_at),
+    };
+  }
+
+  deleteSession(tokenHash: string) {
+    this.database.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
+  }
+
+  checkHealth() {
+    this.database.prepare("SELECT 1").get();
   }
 
   getWorkspace(workspaceId: string): WorkspaceSnapshot {
@@ -460,6 +650,47 @@ export class FollowUpRepository {
 
   close() {
     this.database.close();
+  }
+
+  private seedWorkspaceData(
+    workspaceId: string,
+    now: Date,
+    regenerateIds: boolean,
+  ) {
+    const { followUps, opportunities } = createDemoData(now);
+    const timestamp = now.toISOString();
+    const opportunityIds = new Map<string, string>();
+
+    for (const opportunity of opportunities) {
+      const opportunityId = regenerateIds ? randomUUID() : opportunity.id;
+      opportunityIds.set(opportunity.id, opportunityId);
+      this.insertOpportunity(
+        workspaceId,
+        { ...opportunity, id: opportunityId },
+        timestamp,
+      );
+    }
+    for (const followUp of followUps) {
+      this.insertFollowUp(
+        workspaceId,
+        {
+          ...followUp,
+          id: regenerateIds ? randomUUID() : followUp.id,
+          opportunityId:
+            opportunityIds.get(followUp.opportunityId) ?? followUp.opportunityId,
+        },
+        timestamp,
+      );
+    }
+    this.writeSettings(workspaceId, defaultCandidateSettings, timestamp);
+    this.audit(
+      workspaceId,
+      "workspace.seeded",
+      "workspace",
+      workspaceId,
+      { opportunities: opportunities.length, followUps: followUps.length },
+      timestamp,
+    );
   }
 
   private requireWorkspace(workspaceId: string) {

@@ -1,15 +1,16 @@
-import { getRepository, DEMO_WORKSPACE_ID } from "@/server/database";
+import { requireCurrentSession } from "@/server/auth";
+import { getRepository } from "@/server/database";
 import { errorResponse, parseRequest } from "@/server/http";
 import { candidateSettingsSchema } from "@/server/schemas";
 
 export const runtime = "nodejs";
 
 export async function PATCH(request: Request) {
-  const input = await parseRequest(request, candidateSettingsSchema);
-  if (input instanceof Response) return input;
-
   try {
-    const settings = getRepository().updateSettings(DEMO_WORKSPACE_ID, input);
+    const session = await requireCurrentSession();
+    const input = await parseRequest(request, candidateSettingsSchema);
+    if (input instanceof Response) return input;
+    const settings = getRepository().updateSettings(session.workspaceId, input);
     return Response.json({ settings });
   } catch (error) {
     return errorResponse(error);

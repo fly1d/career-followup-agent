@@ -1,12 +1,14 @@
-import { getRepository, DEMO_WORKSPACE_ID } from "@/server/database";
+import { requireCurrentSession } from "@/server/auth";
+import { getRepository } from "@/server/database";
 import { errorResponse } from "@/server/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET() {
+export async function GET() {
   try {
-    return Response.json(getRepository().getWorkspace(DEMO_WORKSPACE_ID));
+    const session = await requireCurrentSession();
+    return Response.json(getRepository().getWorkspace(session.workspaceId));
   } catch (error) {
     return errorResponse(error);
   }

@@ -263,6 +263,233 @@ select:focus-visible {
   display: block;
 }
 
+.profile-area {
+  position: relative;
+  margin-top: 12px;
+}
+
+.profile-area .profile-button {
+  width: 100%;
+  margin-top: 0;
+}
+
+.profile-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 2;
+  overflow: hidden;
+  border: 1px solid #3a4541;
+  border-radius: 7px;
+  background: #252d2a;
+  box-shadow: 0 12px 26px rgb(0 0 0 / 24%);
+}
+
+.profile-menu > div {
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+  padding: 11px 12px;
+}
+
+.profile-menu strong,
+.profile-menu small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-menu strong {
+  font-size: 12px;
+}
+
+.profile-menu small {
+  margin-top: 3px;
+  color: var(--sidebar-muted);
+  font-size: 10px;
+}
+
+.profile-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  padding: 0 12px;
+  background: transparent;
+  color: #d8dfdc;
+  font-size: 11px;
+  text-align: left;
+}
+
+.profile-menu button:hover {
+  background: rgb(255 255 255 / 6%);
+  color: #ffffff;
+}
+
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+  background: #eef1f0;
+}
+
+.auth-workspace {
+  display: flex;
+  width: min(100%, 460px);
+  min-height: min(660px, calc(100vh - 64px));
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 28px;
+  background: var(--surface);
+  box-shadow: 0 16px 44px rgb(20 31 26 / 9%);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.auth-brand > span:last-child,
+.auth-brand strong,
+.auth-brand small {
+  display: block;
+}
+
+.auth-brand strong {
+  font-size: 14px;
+}
+
+.auth-brand small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.auth-form-wrap {
+  margin: auto 0;
+}
+
+.auth-heading {
+  margin-bottom: 28px;
+}
+
+.auth-lock {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.auth-heading h1 {
+  margin: 16px 0 7px;
+  font-size: 25px;
+  line-height: 1.25;
+}
+
+.auth-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.auth-segments {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px;
+  background: var(--surface-soft);
+}
+
+.auth-segments button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.auth-segments button.active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.auth-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 22px;
+}
+
+.auth-form label > span {
+  display: block;
+  margin-bottom: 7px;
+  color: #4c5752;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.auth-form input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #ffffff;
+  font-size: 13px;
+}
+
+.auth-form input::placeholder {
+  color: #a1aaa6;
+}
+
+.auth-error {
+  min-height: 18px;
+  margin: -3px 0 -2px;
+  color: var(--red);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.auth-submit {
+  display: flex;
+  min-height: 43px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--green);
+  border-radius: 6px;
+  background: var(--green);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auth-submit:hover {
+  border-color: var(--green-dark);
+  background: var(--green-dark);
+}
+
+.auth-footer {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+  color: var(--faint);
+  font-size: 10px;
+  text-align: center;
+}
+
 .profile-button strong {
   font-size: 11px;
   font-weight: 650;
@@ -1589,6 +1816,21 @@ select:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .auth-shell {
+    display: block;
+    padding: 0;
+    background: var(--surface);
+  }
+
+  .auth-workspace {
+    width: 100%;
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+    padding: 24px 20px max(22px, env(safe-area-inset-bottom));
+    box-shadow: none;
+  }
+
   .page-content {
     padding: 20px 14px 28px;
   }

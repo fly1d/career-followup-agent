@@ -11,6 +11,7 @@ import {
   Clock3,
   FileText,
   LayoutDashboard,
+  LogOut,
   MapPin,
   Menu,
   MessageSquareText,
@@ -25,19 +26,19 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { createDemoData, type FollowUpTask, type Opportunity } from "@/data/demo";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import type { FollowUpTask, Opportunity } from "@/data/demo";
 import {
   createOpportunity,
-  fetchWorkspace,
+  logoutAccount,
   mutateFollowUp,
   saveCandidateSettings,
+  type AccountUser,
   type NewOpportunityDraft,
+  type WorkspaceSnapshot,
 } from "@/lib/api-client";
-import {
-  defaultCandidateSettings,
-  type CandidateSettings,
-} from "@/domain/settings";
+import type { CandidateSettings } from "@/domain/settings";
 
 type View = "today" | "opportunities" | "settings";
 type QueueTab = "pending" | "scheduled";
@@ -109,15 +110,20 @@ function todayDateLabel() {
   return `${value("month")} 月 ${value("day")} 日 · ${value("weekday")}`;
 }
 
-export function Dashboard() {
-  const demoData = useMemo(() => createDemoData(), []);
+export function Dashboard({
+  initialSnapshot,
+  user,
+}: {
+  initialSnapshot: WorkspaceSnapshot;
+  user: AccountUser;
+}) {
+  const router = useRouter();
   const [view, setView] = useState<View>("today");
   const [queueTab, setQueueTab] = useState<QueueTab>("pending");
-  const [followUps, setFollowUps] = useState(demoData.followUps);
-  const [opportunities, setOpportunities] = useState(demoData.opportunities);
-  const [settings, setSettings] = useState(defaultCandidateSettings);
-  const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>("connecting");
+  const [followUps, setFollowUps] = useState(initialSnapshot.followUps);
+  const [opportunities, setOpportunities] = useState(initialSnapshot.opportunities);
+  const [settings, setSettings] = useState(initialSnapshot.settings);
+  const [connectionStatus] = useState<ConnectionStatus>("connected");
   const [selectedTask, setSelectedTask] = useState<FollowUpTask | null>(null);
   const [draft, setDraft] = useState("");
   const [newOpportunityOpen, setNewOpportunityOpen] = useState(false);
@@ -126,26 +132,7 @@ export function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetchWorkspace()
-      .then((snapshot) => {
-        if (cancelled) return;
-        setFollowUps(snapshot.followUps);
-        setOpportunities(snapshot.opportunities);
-        setSettings(snapshot.settings);
-        setConnectionStatus("connected");
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setConnectionStatus("error");
-        setToast("服务器连接失败，当前显示演示数据");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     if (!toast) return;
@@ -264,6 +251,17 @@ export function Dashboard() {
     }
   }
 
+  async function logout() {
+    setLoggingOut(true);
+    try {
+      await logoutAccount();
+      router.refresh();
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "退出失败，请重试");
+      setLoggingOut(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -271,6 +269,9 @@ export function Dashboard() {
         pendingCount={pendingCount}
         connectionStatus={connectionStatus}
         targetCities={settings.targetCities}
+        user={user}
+        loggingOut={loggingOut}
+        onLogout={logout}
         onNavigate={(next) => {
           setView(next);
           setMobileMenuOpen(false);
@@ -357,6 +358,9 @@ function Sidebar({
   pendingCount,
   connectionStatus,
   targetCities,
+  user,
+  loggingOut,
+  onLogout,
   onNavigate,
   mobileOpen,
 }: {
@@ -364,9 +368,15 @@ function Sidebar({
   pendingCount: number;
   connectionStatus: ConnectionStatus;
   targetCities: string;
+  user: AccountUser;
+  loggingOut: boolean;
+  onLogout: () => Promise<void>;
   onNavigate: (view: View) => void;
   mobileOpen: boolean;
 }) {
+  const [profileOpen, setProfileOpen] = useState(false);
+  const initials = user.displayName.trim().slice(0, 2).toUpperCase();
+
   return (
     <aside className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}>
       <div className="brand-lockup">
@@ -404,26 +414,51 @@ function Sidebar({
         <div className="status-heading">
           <span className={`live-dot ${connectionStatus}`} />
           {connectionStatus === "connected"
-            ? "本地服务端已连接"
+            ? "账号工作区已连接"
             : connectionStatus === "error"
               ? "服务端连接异常"
               : "正在连接服务端"}
         </div>
-        <p>{connectionStatus === "connected" ? "当前为单工作区预览" : "正在使用本地演示视图"}</p>
+        <p>{connectionStatus === "connected" ? "数据已按账号隔离" : "正在等待服务器恢复"}</p>
         <div className="status-rule">
           {connectionStatus === "error" ? <WifiOff size={15} /> : <Wifi size={15} />}
           发送前需要确认
         </div>
       </div>
 
-      <button type="button" className="profile-button">
-        <span className="profile-avatar">HZ</span>
-        <span>
-          <strong>我的求职计划</strong>
-          <small>{targetCities.replaceAll("、", " · ")}</small>
-        </span>
-        <MoreHorizontal size={17} />
-      </button>
+      <div className="profile-area">
+        {profileOpen && (
+          <div className="profile-menu" role="menu">
+            <div>
+              <strong>{user.displayName}</strong>
+              <small>{user.email}</small>
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void onLogout()}
+              disabled={loggingOut}
+            >
+              <LogOut size={15} />
+              {loggingOut ? "正在退出" : "退出登录"}
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="profile-button"
+          aria-haspopup="menu"
+          aria-expanded={profileOpen}
+          onClick={() => setProfileOpen((open) => !open)}
+        >
+          <span className="profile-avatar">{initials}</span>
+          <span>
+            <strong>{user.displayName}</strong>
+            <small>{targetCities.replaceAll("、", " · ")}</small>
+          </span>
+          <MoreHorizontal size={17} />
+        </button>
+      </div>
     </aside>
   );
 }
@@ -521,7 +556,7 @@ function TodayView({
             已按对话承诺、求职阶段和工作时间排好优先级。
             <span className={`connection-label ${connectionStatus}`}>
               {connectionStatus === "connected"
-                ? "本地服务端已同步"
+                ? "账号数据已同步"
                 : connectionStatus === "error"
                   ? "服务器离线"
                   : "正在同步"}

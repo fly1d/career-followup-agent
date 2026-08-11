@@ -2,6 +2,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import {
+  AuthenticationError,
+  DuplicateAccountError,
+  InvalidCredentialsError,
+} from "./errors";
 import { errorResponse, parseRequest } from "./http";
 import {
   RepositoryConflictError,
@@ -10,7 +15,9 @@ import {
 import {
   candidateSettingsSchema,
   followUpMutationSchema,
+  loginSchema,
   newOpportunitySchema,
+  registrationSchema,
 } from "./schemas";
 
 describe("parseRequest", () => {
@@ -76,6 +83,17 @@ describe("errorResponse", () => {
     expect(consoleError).toHaveBeenCalledOnce();
     consoleError.mockRestore();
   });
+
+  it("maps authentication failures without exposing internal details", async () => {
+    const missing = errorResponse(new AuthenticationError("raw token"));
+    const credentials = errorResponse(new InvalidCredentialsError("known email"));
+    const duplicate = errorResponse(new DuplicateAccountError("database row"));
+
+    expect(missing.status).toBe(401);
+    expect(credentials.status).toBe(401);
+    expect(duplicate.status).toBe(409);
+    expect(JSON.stringify(await credentials.json())).not.toContain("known email");
+  });
 });
 
 describe("API schemas", () => {
@@ -108,5 +126,27 @@ describe("API schemas", () => {
         deliveryEnd: "18:30",
       }).success,
     ).toBe(false);
+  });
+
+  it("normalizes account emails and enforces strong registration passwords", () => {
+    const valid = registrationSchema.safeParse({
+      displayName: " 林岚 ",
+      email: " LIN@example.COM ",
+      password: "secure-pass-2026",
+    });
+    expect(valid.success && valid.data).toMatchObject({
+      displayName: "林岚",
+      email: "lin@example.com",
+    });
+    expect(
+      registrationSchema.safeParse({
+        displayName: "林岚",
+        email: "invalid",
+        password: "onlyletters",
+      }).success,
+    ).toBe(false);
+    expect(
+      loginSchema.safeParse({ email: "USER@EXAMPLE.COM", password: "x" }),
+    ).toMatchObject({ success: true, data: { email: "user@example.com" } });
   });
 });

@@ -1,4 +1,5 @@
-import { getRepository, DEMO_WORKSPACE_ID } from "@/server/database";
+import { requireCurrentSession } from "@/server/auth";
+import { getRepository } from "@/server/database";
 import { errorResponse, parseRequest } from "@/server/http";
 import { followUpMutationSchema } from "@/server/schemas";
 
@@ -8,13 +9,13 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  const input = await parseRequest(request, followUpMutationSchema);
-  if (input instanceof Response) return input;
-
   try {
+    const session = await requireCurrentSession();
+    const input = await parseRequest(request, followUpMutationSchema);
+    if (input instanceof Response) return input;
     const { id } = await context.params;
     const followUp = getRepository().updateFollowUp(
-      DEMO_WORKSPACE_ID,
+      session.workspaceId,
       id,
       input,
     );

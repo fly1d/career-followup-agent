@@ -142,4 +142,66 @@ describe("FollowUpRepository", () => {
     expect(saved.maxFollowUps).toBe(1);
     expect(saved.confirmBeforeSend).toBe(false);
   });
+
+  it("creates isolated account workspaces with independent example records", () => {
+    const first = repository.createAccount({
+      email: "FIRST@EXAMPLE.COM",
+      displayName: "林岚",
+      passwordHash: "first-hash",
+    });
+    const second = repository.createAccount({
+      email: "second@example.com",
+      displayName: "周宁",
+      passwordHash: "second-hash",
+    });
+
+    expect(first.user.email).toBe("first@example.com");
+    expect(first.workspaceId).not.toBe(second.workspaceId);
+    const firstSnapshot = repository.getWorkspace(first.workspaceId);
+    const secondSnapshot = repository.getWorkspace(second.workspaceId);
+    expect(firstSnapshot.opportunities).toHaveLength(4);
+    expect(secondSnapshot.opportunities).toHaveLength(4);
+    expect(firstSnapshot.opportunities[0].id).not.toBe(
+      secondSnapshot.opportunities[0].id,
+    );
+    expect(() =>
+      repository.updateFollowUp(
+        second.workspaceId,
+        firstSnapshot.followUps[0].id,
+        { action: "skip" },
+      ),
+    ).toThrow(RepositoryNotFoundError);
+    expect(() =>
+      repository.createAccount({
+        email: "first@example.com",
+        displayName: "重复账号",
+        passwordHash: "another-hash",
+      }),
+    ).toThrow(RepositoryConflictError);
+  });
+
+  it("resolves, expires, and revokes opaque sessions", () => {
+    const identity = repository.createAccount({
+      email: "session@example.com",
+      displayName: "会话用户",
+      passwordHash: "password-hash",
+    });
+    const createdAt = new Date("2026-08-11T08:00:00.000Z");
+    const expiresAt = new Date("2026-09-10T08:00:00.000Z");
+    repository.createSession(identity, "token-hash", expiresAt, createdAt);
+
+    expect(
+      repository.getSession("token-hash", new Date("2026-08-12T08:00:00.000Z")),
+    ).toMatchObject({
+      user: { email: "session@example.com", displayName: "会话用户" },
+      workspaceId: identity.workspaceId,
+      expiresAt: expiresAt.toISOString(),
+    });
+    expect(
+      repository.getSession("token-hash", new Date("2026-09-10T08:00:00.000Z")),
+    ).toBeNull();
+
+    repository.deleteSession("token-hash");
+    expect(repository.getSession("token-hash", createdAt)).toBeNull();
+  });
 });
