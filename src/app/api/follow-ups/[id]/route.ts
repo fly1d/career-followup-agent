@@ -14,7 +14,8 @@ export async function PATCH(
     const input = await parseRequest(request, followUpMutationSchema);
     if (input instanceof Response) return input;
     const { id } = await context.params;
-    const followUp = getRepository().updateFollowUp(
+    const repository = await getRepository();
+    const followUp = await repository.updateFollowUp(
       session.workspaceId,
       id,
       input,

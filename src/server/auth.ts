@@ -20,10 +20,11 @@ export function hashSessionToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function issueSession(identity: AccountIdentity, now = new Date()) {
+async function issueSession(identity: AccountIdentity, now = new Date()) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(now.getTime() + SESSION_DURATION_MS);
-  getRepository().createSession(identity, hashSessionToken(token), expiresAt, now);
+  const repository = await getRepository();
+  await repository.createSession(identity, hashSessionToken(token), expiresAt, now);
   return { token, expiresAt };
 }
 
@@ -33,9 +34,10 @@ export async function registerAccount(input: {
   password: string;
 }) {
   const passwordHash = await hashPassword(input.password);
+  const repository = await getRepository();
   let identity: AccountIdentity;
   try {
-    identity = getRepository().createAccount({
+    identity = await repository.createAccount({
       email: input.email,
       displayName: input.displayName,
       passwordHash,
@@ -47,11 +49,12 @@ export async function registerAccount(input: {
     throw error;
   }
 
-  return { identity, ...issueSession(identity) };
+  return { identity, ...(await issueSession(identity)) };
 }
 
 export async function loginAccount(input: { email: string; password: string }) {
-  const record = getRepository().findUserByEmail(input.email);
+  const repository = await getRepository();
+  const record = await repository.findUserByEmail(input.email);
   if (!record) {
     await consumeLoginTiming(input.password);
     throw new InvalidCredentialsError("Invalid credentials");
@@ -64,7 +67,7 @@ export async function loginAccount(input: { email: string; password: string }) {
     user: record.user,
     workspaceId: record.workspaceId,
   };
-  return { identity, ...issueSession(identity) };
+  return { identity, ...(await issueSession(identity)) };
 }
 
 export async function setSessionCookie(token: string, expiresAt: Date) {
@@ -82,7 +85,8 @@ export async function setSessionCookie(token: string, expiresAt: Date) {
 export async function getCurrentSession(): Promise<AuthenticatedSession | null> {
   const token = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
-  return getRepository().getSession(hashSessionToken(token));
+  const repository = await getRepository();
+  return repository.getSession(hashSessionToken(token));
 }
 
 export async function requireCurrentSession() {
@@ -94,6 +98,9 @@ export async function requireCurrentSession() {
 export async function logoutCurrentSession() {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  if (token) getRepository().deleteSession(hashSessionToken(token));
+  if (token) {
+    const repository = await getRepository();
+    await repository.deleteSession(hashSessionToken(token));
+  }
   cookieStore.delete(SESSION_COOKIE_NAME);
 }

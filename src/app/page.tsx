@@ -9,7 +9,8 @@ export default async function Home() {
   const session = await getCurrentSession();
   if (!session) return <AuthScreen />;
 
-  const initialSnapshot = getRepository().getWorkspace(session.workspaceId);
+  const repository = await getRepository();
+  const initialSnapshot = await repository.getWorkspace(session.workspaceId);
   return (
     <Dashboard
       initialSnapshot={initialSnapshot}

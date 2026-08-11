@@ -17,7 +17,10 @@ export default defineConfig({
       include: [
         "src/domain/**/*.ts",
         "src/server/auth.ts",
+        "src/server/postgres-store.ts",
         "src/server/repository.ts",
+        "src/server/store-records.ts",
+        "src/server/store.ts",
         "src/server/http.ts",
         "src/server/password.ts",
         "src/server/schemas.ts",

@@ -10,7 +10,8 @@ export async function PATCH(request: Request) {
     const session = await requireCurrentSession();
     const input = await parseRequest(request, candidateSettingsSchema);
     if (input instanceof Response) return input;
-    const settings = getRepository().updateSettings(session.workspaceId, input);
+    const repository = await getRepository();
+    const settings = await repository.updateSettings(session.workspaceId, input);
     return Response.json({ settings });
   } catch (error) {
     return errorResponse(error);

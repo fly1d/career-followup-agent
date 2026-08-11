@@ -3,13 +3,15 @@ import { getRepository } from "@/server/database";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET() {
+export async function GET() {
   try {
-    getRepository().checkHealth();
+    const repository = await getRepository();
+    await repository.checkHealth();
     return Response.json({
       status: "ok",
       service: "career-followup-agent",
       storage: "ready",
+      database: repository.backend,
     });
   } catch (error) {
     console.error("Health check failed", error);

@@ -10,7 +10,8 @@ export async function POST(request: Request) {
     const session = await requireCurrentSession();
     const input = await parseRequest(request, newOpportunitySchema);
     if (input instanceof Response) return input;
-    const result = getRepository().createOpportunity(session.workspaceId, input);
+    const repository = await getRepository();
+    const result = await repository.createOpportunity(session.workspaceId, input);
     return Response.json(result, { status: 201 });
   } catch (error) {
     return errorResponse(error);

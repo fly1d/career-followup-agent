@@ -2,22 +2,21 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { addBusinessDays, set } from "date-fns";
 import {
-  createDemoData,
   type FollowUpStatus,
   type FollowUpTask,
   type Opportunity,
 } from "@/data/demo";
-import {
-  buildFollowUpDraft,
-  recommendFollowUp,
-  type OpportunityStage,
-} from "@/domain/follow-up";
+import type { OpportunityStage } from "@/domain/follow-up";
 import {
   defaultCandidateSettings,
   type CandidateSettings,
 } from "@/domain/settings";
+import {
+  createWorkspaceSeed,
+  prepareFollowUpUpdate,
+  prepareNewOpportunity,
+} from "./store-records";
 
 export const DEMO_WORKSPACE_ID = "demo-workspace";
 
@@ -475,53 +474,11 @@ export class FollowUpRepository {
   ) {
     this.requireWorkspace(workspaceId);
     const timestamp = now.toISOString();
-    const opportunityId = randomUUID();
-    const recommendation = recommendFollowUp({
-      stage: "applied",
-      lastActivityAt: now,
-      priorFollowUpCount: 0,
-    });
-
-    if (!recommendation) {
+    const prepared = prepareNewOpportunity(input, now);
+    if (!prepared) {
       throw new RepositoryConflictError("A follow-up could not be scheduled");
     }
-
-    const opportunity: Opportunity = {
-      id: opportunityId,
-      company: input.company,
-      companyMark: input.company.slice(0, 1),
-      role: input.role,
-      location: input.location || "待确认",
-      salary: input.salary || "待确认",
-      recruiter: "待补充",
-      source: "手动添加",
-      stage: "applied",
-      stageLabel: "已投递",
-      priority: "normal",
-      lastActivityAt: timestamp,
-      nextFollowUpAt: recommendation.dueAt.toISOString(),
-      resume: "待选择简历",
-    };
-    const followUp: FollowUpTask = {
-      id: randomUUID(),
-      opportunityId,
-      company: input.company,
-      companyMark: input.company.slice(0, 1),
-      role: input.role,
-      recruiter: "待补充",
-      channel: "手动添加",
-      stage: "applied",
-      dueAt: recommendation.dueAt.toISOString(),
-      reason: recommendation.reason,
-      context: "机会由用户手动添加，等待补充招聘方与沟通信息。",
-      message: buildFollowUpDraft({
-        role: input.role,
-        company: input.company,
-        stage: "applied",
-      }),
-      confidence: 78,
-      status: "scheduled",
-    };
+    const { opportunity, followUp } = prepared;
 
     this.transaction(() => {
       this.insertOpportunity(workspaceId, opportunity, timestamp);
@@ -561,29 +518,8 @@ export class FollowUpRepository {
     }
 
     const timestamp = now.toISOString();
-    let status: FollowUpStatus = current.status;
-    let dueAt = current.dueAt;
-    let message = current.message;
-    let eventType: string;
-
-    if (mutation.action === "mark_sent") {
-      status = "sent";
-      message = mutation.message;
-      eventType = "follow_up.sent_recorded";
-    } else if (mutation.action === "snooze") {
-      status = "scheduled";
-      const nextDay = set(addBusinessDays(now, 1), {
-        hours: 10,
-        minutes: 0,
-        seconds: 0,
-        milliseconds: 0,
-      });
-      dueAt = nextDay.toISOString();
-      eventType = "follow_up.snoozed";
-    } else {
-      status = "skipped";
-      eventType = "follow_up.skipped";
-    }
+    const { followUp, eventType, nextFollowUpAt, sentAt } =
+      prepareFollowUpUpdate(current, mutation, now);
 
     this.transaction(() => {
       this.database
@@ -593,10 +529,10 @@ export class FollowUpRepository {
            WHERE id = ? AND workspace_id = ?`,
         )
         .run(
-          status,
-          dueAt,
-          message,
-          status === "sent" ? timestamp : null,
+          followUp.status,
+          followUp.dueAt,
+          followUp.message,
+          sentAt,
           timestamp,
           taskId,
           workspaceId,
@@ -606,12 +542,19 @@ export class FollowUpRepository {
           "UPDATE opportunities SET next_follow_up_at = ?, updated_at = ? WHERE id = ? AND workspace_id = ?",
         )
         .run(
-          status === "scheduled" ? dueAt : null,
+          nextFollowUpAt,
           timestamp,
           current.opportunityId,
           workspaceId,
         );
-      this.audit(workspaceId, eventType, "follow_up", taskId, { status, dueAt }, timestamp);
+      this.audit(
+        workspaceId,
+        eventType,
+        "follow_up",
+        taskId,
+        { status: followUp.status, dueAt: followUp.dueAt },
+        timestamp,
+      );
     });
 
     const updated = this.database
@@ -657,30 +600,14 @@ export class FollowUpRepository {
     now: Date,
     regenerateIds: boolean,
   ) {
-    const { followUps, opportunities } = createDemoData(now);
+    const { followUps, opportunities } = createWorkspaceSeed(now, regenerateIds);
     const timestamp = now.toISOString();
-    const opportunityIds = new Map<string, string>();
 
     for (const opportunity of opportunities) {
-      const opportunityId = regenerateIds ? randomUUID() : opportunity.id;
-      opportunityIds.set(opportunity.id, opportunityId);
-      this.insertOpportunity(
-        workspaceId,
-        { ...opportunity, id: opportunityId },
-        timestamp,
-      );
+      this.insertOpportunity(workspaceId, opportunity, timestamp);
     }
     for (const followUp of followUps) {
-      this.insertFollowUp(
-        workspaceId,
-        {
-          ...followUp,
-          id: regenerateIds ? randomUUID() : followUp.id,
-          opportunityId:
-            opportunityIds.get(followUp.opportunityId) ?? followUp.opportunityId,
-        },
-        timestamp,
-      );
+      this.insertFollowUp(workspaceId, followUp, timestamp);
     }
     this.writeSettings(workspaceId, defaultCandidateSettings, timestamp);
     this.audit(

@@ -8,7 +8,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const session = await requireCurrentSession();
-    return Response.json(getRepository().getWorkspace(session.workspaceId));
+    const repository = await getRepository();
+    return Response.json(await repository.getWorkspace(session.workspaceId));
   } catch (error) {
     return errorResponse(error);
   }

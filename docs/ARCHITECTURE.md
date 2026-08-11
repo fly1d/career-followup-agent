@@ -21,14 +21,14 @@ flowchart LR
   A --> S["Object Storage"]
 ```
 
-当前 M1B 使用相同仓储边界下的 Node.js SQLite，数据库文件默认位于 `.data/followup.db`。账号、成员关系和会话已经持久化，每个账号创建独立工作区；SQLite 用于验证认证、租户数据流和可靠性规则，不是生产多用户存储。
+当前 M1C 在统一异步仓储契约下支持两种实现：未配置 `DATABASE_URL` 时使用 Node.js SQLite，数据库文件默认位于 `.data/followup.db`；配置后使用 PostgreSQL 连接池。账号、成员关系和会话均已持久化，每个账号创建独立工作区。
 
 ## 3. 代码边界
 
 - `src/domain`：纯业务规则，不依赖 React、数据库或模型 SDK。
 - `src/components`：产品界面和交互状态。
 - `src/data`：初始化本地工作区所需的演示数据。
-- `src/server`：数据库迁移、仓储、密码哈希、会话、输入验证和 HTTP 错误边界。
+- `src/server`：共享业务记录准备、SQLite/PostgreSQL 仓储、数据库迁移、密码哈希、会话、输入验证和 HTTP 错误边界。
 - `src/app/api`：认证、健康检查、工作区、机会、追问和设置接口。
 - `tests`：跨页面浏览器冒烟测试。
 
@@ -53,6 +53,16 @@ flowchart LR
 - 会话 Cookie 为 HttpOnly、SameSite=Lax、Path=/，生产模式启用 Secure，默认 30 天过期。
 - 登录失败对不存在账号和错误密码使用相同响应，并执行等价的密码派生工作。
 - 退出同时删除数据库会话与浏览器 Cookie；过期会话不能读取任何业务数据。
+
+## 3.3 数据库适配
+
+- `FollowUpStore` 定义页面与 API 使用的异步数据契约。
+- SQLite 适配器复用本地同步仓储，保持零配置开发体验。
+- PostgreSQL 适配器使用连接池和原生参数化 SQL；账号创建、机会创建、设置更新和追问变更均使用事务。
+- 工作区读取在同一连接的 `REPEATABLE READ READ ONLY` 事务中完成，避免机会、追问和设置来自不同快照。
+- 追问变更使用 `SELECT ... FOR UPDATE`，相同发送记录保持幂等。
+- 迁移使用事务级 advisory lock，支持多个应用实例同时启动。
+- 共享纯函数生成示例记录、首次追问和状态变化，避免两个数据库实现出现业务规则分叉。
 
 ## 4. 核心数据实体
 
