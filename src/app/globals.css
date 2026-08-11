@@ -201,6 +201,16 @@ select:focus-visible {
   box-shadow: 0 0 0 4px rgb(113 211 169 / 10%);
 }
 
+.live-dot.connecting {
+  background: #e0ad63;
+  box-shadow: 0 0 0 4px rgb(224 173 99 / 10%);
+}
+
+.live-dot.error {
+  background: #df7568;
+  box-shadow: 0 0 0 4px rgb(223 117 104 / 10%);
+}
+
 .sidebar-status p {
   margin: 8px 0 12px 15px;
   color: var(--sidebar-muted);
@@ -299,6 +309,30 @@ select:focus-visible {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.connection-label {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  margin-left: 9px;
+  border-radius: 4px;
+  padding: 0 7px;
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.connection-label.connecting {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.connection-label.error {
+  background: #f8e8e5;
+  color: var(--red);
 }
 
 .eyebrow {

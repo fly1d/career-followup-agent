@@ -21,13 +21,26 @@ flowchart LR
   A --> S["Object Storage"]
 ```
 
+当前 M1A 使用相同仓储边界下的 Node.js SQLite 和固定演示工作区，数据库文件默认位于 `.data/followup.db`。它用于验证服务端数据流和可靠性规则，不是生产多用户架构。
+
 ## 3. 代码边界
 
 - `src/domain`：纯业务规则，不依赖 React、数据库或模型 SDK。
 - `src/components`：产品界面和交互状态。
-- `src/data`：当前里程碑的演示数据；M1 后替换为服务端仓储。
-- `src/app/api`：健康检查和后续 HTTP 接口。
+- `src/data`：初始化本地工作区所需的演示数据。
+- `src/server`：数据库迁移、仓储、输入验证和 HTTP 错误边界。
+- `src/app/api`：健康检查、工作区、机会、追问和设置接口。
 - `tests`：跨页面浏览器冒烟测试。
+
+## 3.1 当前 API
+
+- `GET /api/health`：数据库就绪检查。
+- `GET /api/workspace`：读取当前单工作区快照。
+- `POST /api/opportunities`：创建机会及首次追问计划。
+- `PATCH /api/follow-ups/:id`：记录发送、延后或跳过。
+- `PATCH /api/settings`：保存求职目标和追问规则。
+
+这些接口在 M1B 加入身份认证前均视为本地开发接口。
 
 ## 4. 核心数据实体
 

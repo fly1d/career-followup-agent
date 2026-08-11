@@ -21,10 +21,23 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Wifi,
+  WifiOff,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createDemoData, type FollowUpTask, type Opportunity } from "@/data/demo";
+import {
+  createOpportunity,
+  fetchWorkspace,
+  mutateFollowUp,
+  saveCandidateSettings,
+  type NewOpportunityDraft,
+} from "@/lib/api-client";
+import {
+  defaultCandidateSettings,
+  type CandidateSettings,
+} from "@/domain/settings";
 
 type View = "today" | "opportunities" | "settings";
 type QueueTab = "pending" | "scheduled";
@@ -39,7 +52,7 @@ const navigation: Array<{
   { id: "settings", label: "设置", icon: Settings2 },
 ];
 
-const storageKey = "career-followup-demo-v1";
+type ConnectionStatus = "connecting" | "connected" | "error";
 
 function relativeDueLabel(task: FollowUpTask) {
   const due = new Date(task.dueAt);
@@ -85,42 +98,54 @@ function stageTone(stage: Opportunity["stage"]) {
   return "neutral";
 }
 
+function todayDateLabel() {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    weekday: "long",
+  }).formatToParts(new Date());
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("month")} 月 ${value("day")} 日 · ${value("weekday")}`;
+}
+
 export function Dashboard() {
   const demoData = useMemo(() => createDemoData(), []);
   const [view, setView] = useState<View>("today");
   const [queueTab, setQueueTab] = useState<QueueTab>("pending");
   const [followUps, setFollowUps] = useState(demoData.followUps);
   const [opportunities, setOpportunities] = useState(demoData.opportunities);
+  const [settings, setSettings] = useState(defaultCandidateSettings);
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("connecting");
   const [selectedTask, setSelectedTask] = useState<FollowUpTask | null>(null);
   const [draft, setDraft] = useState("");
   const [newOpportunityOpen, setNewOpportunityOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(storageKey);
-    if (!stored) return;
-    try {
-      const parsed = JSON.parse(stored) as {
-        followUps: FollowUpTask[];
-        opportunities: Opportunity[];
-      };
-      window.setTimeout(() => {
-        setFollowUps(parsed.followUps);
-        setOpportunities(parsed.opportunities);
-      }, 0);
-    } catch {
-      window.localStorage.removeItem(storageKey);
-    }
+    let cancelled = false;
+    void fetchWorkspace()
+      .then((snapshot) => {
+        if (cancelled) return;
+        setFollowUps(snapshot.followUps);
+        setOpportunities(snapshot.opportunities);
+        setSettings(snapshot.settings);
+        setConnectionStatus("connected");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setConnectionStatus("error");
+        setToast("服务器连接失败，当前显示演示数据");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem(
-      storageKey,
-      JSON.stringify({ followUps, opportunities }),
-    );
-  }, [followUps, opportunities]);
 
   useEffect(() => {
     if (!toast) return;
@@ -141,46 +166,102 @@ export function Dashboard() {
     setDraft(task.message);
   }
 
-  function confirmSend() {
+  async function confirmSend() {
     if (!selectedTask) return;
-    setFollowUps((current) =>
-      current.map((task) =>
-        task.id === selectedTask.id
-          ? { ...task, message: draft, status: "sent" }
-          : task,
-      ),
-    );
-    setSelectedTask(null);
-    setToast("追问已记录");
+    setBusyTaskId(selectedTask.id);
+    try {
+      const { followUp } = await mutateFollowUp(selectedTask.id, {
+        action: "mark_sent",
+        message: draft,
+      });
+      setFollowUps((current) =>
+        current.map((task) => (task.id === followUp.id ? followUp : task)),
+      );
+      setOpportunities((current) =>
+        current.map((item) =>
+          item.id === followUp.opportunityId
+            ? { ...item, nextFollowUpAt: undefined }
+            : item,
+        ),
+      );
+      setSelectedTask(null);
+      setToast("追问已保存到服务器");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "保存失败，请重试");
+    } finally {
+      setBusyTaskId(null);
+    }
   }
 
-  function snoozeTask(task: FollowUpTask) {
-    const tomorrow = new Date(task.dueAt);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    setFollowUps((current) =>
-      current.map((item) =>
-        item.id === task.id
-          ? { ...item, dueAt: tomorrow.toISOString(), status: "scheduled" }
-          : item,
-      ),
-    );
-    setToast("已安排到明天");
+  async function snoozeTask(task: FollowUpTask) {
+    setBusyTaskId(task.id);
+    try {
+      const { followUp } = await mutateFollowUp(task.id, { action: "snooze" });
+      setFollowUps((current) =>
+        current.map((item) => (item.id === followUp.id ? followUp : item)),
+      );
+      setOpportunities((current) =>
+        current.map((item) =>
+          item.id === followUp.opportunityId
+            ? { ...item, nextFollowUpAt: followUp.dueAt }
+            : item,
+        ),
+      );
+      setToast("已保存并安排到下一个工作日");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "保存失败，请重试");
+    } finally {
+      setBusyTaskId(null);
+    }
   }
 
-  function skipTask(task: FollowUpTask) {
-    setFollowUps((current) =>
-      current.map((item) =>
-        item.id === task.id ? { ...item, status: "skipped" } : item,
-      ),
-    );
-    setToast("本次追问已跳过");
+  async function skipTask(task: FollowUpTask) {
+    setBusyTaskId(task.id);
+    try {
+      const { followUp } = await mutateFollowUp(task.id, { action: "skip" });
+      setFollowUps((current) =>
+        current.map((item) => (item.id === followUp.id ? followUp : item)),
+      );
+      setOpportunities((current) =>
+        current.map((item) =>
+          item.id === followUp.opportunityId
+            ? { ...item, nextFollowUpAt: undefined }
+            : item,
+        ),
+      );
+      setToast("本次追问已跳过并保存");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "保存失败，请重试");
+    } finally {
+      setBusyTaskId(null);
+    }
   }
 
-  function addOpportunity(opportunity: Opportunity) {
-    setOpportunities((current) => [opportunity, ...current]);
-    setNewOpportunityOpen(false);
-    setView("opportunities");
-    setToast("机会已加入跟进列表");
+  async function addOpportunity(input: NewOpportunityDraft) {
+    try {
+      const { opportunity, followUp } = await createOpportunity(input);
+      setOpportunities((current) => [opportunity, ...current]);
+      setFollowUps((current) => [...current, followUp]);
+      setNewOpportunityOpen(false);
+      setView("opportunities");
+      setToast("机会和追问计划已保存到服务器");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "保存失败，请重试");
+      throw error;
+    }
+  }
+
+  async function persistSettings() {
+    setSavingSettings(true);
+    try {
+      const result = await saveCandidateSettings(settings);
+      setSettings(result.settings);
+      setToast("设置已保存到服务器");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "设置保存失败");
+    } finally {
+      setSavingSettings(false);
+    }
   }
 
   return (
@@ -188,6 +269,8 @@ export function Dashboard() {
       <Sidebar
         currentView={view}
         pendingCount={pendingCount}
+        connectionStatus={connectionStatus}
+        targetCities={settings.targetCities}
         onNavigate={(next) => {
           setView(next);
           setMobileMenuOpen(false);
@@ -210,6 +293,8 @@ export function Dashboard() {
             scheduledCount={scheduledCount}
             sentCount={sentCount}
             opportunityCount={opportunities.length}
+            connectionStatus={connectionStatus}
+            busyTaskId={busyTaskId}
             onTabChange={setQueueTab}
             onConfirm={openConfirmation}
             onSnooze={snoozeTask}
@@ -227,7 +312,14 @@ export function Dashboard() {
           />
         )}
 
-        {view === "settings" && <SettingsView onSaved={() => setToast("设置已保存")} />}
+        {view === "settings" && (
+          <SettingsView
+            settings={settings}
+            onChange={setSettings}
+            onSaved={persistSettings}
+            saving={savingSettings}
+          />
+        )}
       </main>
 
       <MobileNavigation currentView={view} onNavigate={setView} />
@@ -239,6 +331,7 @@ export function Dashboard() {
           onDraftChange={setDraft}
           onClose={() => setSelectedTask(null)}
           onConfirm={confirmSend}
+          saving={busyTaskId === selectedTask.id}
         />
       )}
 
@@ -262,11 +355,15 @@ export function Dashboard() {
 function Sidebar({
   currentView,
   pendingCount,
+  connectionStatus,
+  targetCities,
   onNavigate,
   mobileOpen,
 }: {
   currentView: View;
   pendingCount: number;
+  connectionStatus: ConnectionStatus;
+  targetCities: string;
   onNavigate: (view: View) => void;
   mobileOpen: boolean;
 }) {
@@ -305,12 +402,16 @@ function Sidebar({
 
       <div className="sidebar-status">
         <div className="status-heading">
-          <span className="live-dot" />
-          追问助手运行中
+          <span className={`live-dot ${connectionStatus}`} />
+          {connectionStatus === "connected"
+            ? "本地服务端已连接"
+            : connectionStatus === "error"
+              ? "服务端连接异常"
+              : "正在连接服务端"}
         </div>
-        <p>下一次检查：17:30</p>
+        <p>{connectionStatus === "connected" ? "当前为单工作区预览" : "正在使用本地演示视图"}</p>
         <div className="status-rule">
-          <ShieldCheck size={15} />
+          {connectionStatus === "error" ? <WifiOff size={15} /> : <Wifi size={15} />}
           发送前需要确认
         </div>
       </div>
@@ -319,7 +420,7 @@ function Sidebar({
         <span className="profile-avatar">HZ</span>
         <span>
           <strong>我的求职计划</strong>
-          <small>上海 · 杭州</small>
+          <small>{targetCities.replaceAll("、", " · ")}</small>
         </span>
         <MoreHorizontal size={17} />
       </button>
@@ -387,6 +488,8 @@ function TodayView({
   scheduledCount,
   sentCount,
   opportunityCount,
+  connectionStatus,
+  busyTaskId,
   onTabChange,
   onConfirm,
   onSnooze,
@@ -400,6 +503,8 @@ function TodayView({
   scheduledCount: number;
   sentCount: number;
   opportunityCount: number;
+  connectionStatus: ConnectionStatus;
+  busyTaskId: string | null;
   onTabChange: (tab: QueueTab) => void;
   onConfirm: (task: FollowUpTask) => void;
   onSnooze: (task: FollowUpTask) => void;
@@ -410,9 +515,18 @@ function TodayView({
     <div className="page-content">
       <header className="page-header">
         <div>
-          <p className="eyebrow">8 月 11 日 · 星期二</p>
+          <p className="eyebrow" suppressHydrationWarning>{todayDateLabel()}</p>
           <h1>今日待跟进</h1>
-          <p>已按对话承诺、求职阶段和工作时间排好优先级。</p>
+          <p>
+            已按对话承诺、求职阶段和工作时间排好优先级。
+            <span className={`connection-label ${connectionStatus}`}>
+              {connectionStatus === "connected"
+                ? "本地服务端已同步"
+                : connectionStatus === "error"
+                  ? "服务器离线"
+                  : "正在同步"}
+            </span>
+          </p>
         </div>
         <div className="header-actions">
           <button type="button" className="icon-button desktop-only" aria-label="通知">
@@ -481,6 +595,7 @@ function TodayView({
                 onConfirm={() => onConfirm(task)}
                 onSnooze={() => onSnooze(task)}
                 onSkip={() => onSkip(task)}
+                busy={busyTaskId === task.id}
               />
             ))}
             {tasks.length === 0 && (
@@ -539,11 +654,13 @@ function FollowUpCard({
   onConfirm,
   onSnooze,
   onSkip,
+  busy,
 }: {
   task: FollowUpTask;
   onConfirm: () => void;
   onSnooze: () => void;
   onSkip: () => void;
+  busy: boolean;
 }) {
   return (
     <article className={`follow-up-card ${task.status === "scheduled" ? "scheduled" : ""}`}>
@@ -564,7 +681,7 @@ function FollowUpCard({
             <Clock3 size={14} />
             {relativeDueLabel(task)}
           </span>
-          <button type="button" className="icon-button subtle" onClick={onSkip} aria-label="跳过本次追问" title="跳过本次追问">
+          <button type="button" className="icon-button subtle" onClick={onSkip} aria-label="跳过本次追问" title="跳过本次追问" disabled={busy}>
             <X size={17} />
           </button>
         </div>
@@ -589,11 +706,11 @@ function FollowUpCard({
       </div>
 
       <footer className="card-actions">
-        <button type="button" className="secondary-button" onClick={onSnooze}>
+        <button type="button" className="secondary-button" onClick={onSnooze} disabled={busy}>
           <CalendarClock size={16} />
           明天再处理
         </button>
-        <button type="button" className="primary-button" onClick={onConfirm}>
+        <button type="button" className="primary-button" onClick={onConfirm} disabled={busy}>
           <Send size={16} />
           确认发送
         </button>
@@ -695,10 +812,17 @@ function OpportunitiesView({
   );
 }
 
-function SettingsView({ onSaved }: { onSaved: () => void }) {
-  const [confirmBeforeSend, setConfirmBeforeSend] = useState(true);
-  const [avoidWeekends, setAvoidWeekends] = useState(true);
-
+function SettingsView({
+  settings,
+  onChange,
+  onSaved,
+  saving,
+}: {
+  settings: CandidateSettings;
+  onChange: (settings: CandidateSettings) => void;
+  onSaved: () => Promise<void>;
+  saving: boolean;
+}) {
   return (
     <div className="page-content settings-page">
       <header className="page-header compact">
@@ -707,9 +831,14 @@ function SettingsView({ onSaved }: { onSaved: () => void }) {
           <h1>求职设置</h1>
           <p>这些信息决定智能体什么时候追问、如何表达和何时停下。</p>
         </div>
-        <button type="button" className="primary-button" onClick={onSaved}>
+        <button
+          type="button"
+          className="primary-button"
+          onClick={() => void onSaved()}
+          disabled={saving}
+        >
           <Check size={17} />
-          保存设置
+          {saving ? "正在保存" : "保存设置"}
         </button>
       </header>
 
@@ -724,22 +853,48 @@ function SettingsView({ onSaved }: { onSaved: () => void }) {
         <div className="settings-fields">
           <label>
             <span>目标岗位</span>
-            <input defaultValue="高级产品经理、AI 产品经理" />
+            <input
+              value={settings.targetRoles}
+              onChange={(event) =>
+                onChange({ ...settings, targetRoles: event.target.value })
+              }
+            />
           </label>
           <label>
             <span>目标城市</span>
-            <input defaultValue="上海、杭州" />
+            <input
+              value={settings.targetCities}
+              onChange={(event) =>
+                onChange({ ...settings, targetCities: event.target.value })
+              }
+            />
           </label>
           <label>
             <span>最低月薪</span>
             <div className="input-suffix">
-              <input type="number" defaultValue="28" />
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                value={settings.minimumMonthlySalary}
+                onChange={(event) =>
+                  onChange({
+                    ...settings,
+                    minimumMonthlySalary: Number(event.target.value),
+                  })
+                }
+              />
               <span>K</span>
             </div>
           </label>
           <label>
             <span>不考虑</span>
-            <input defaultValue="外包、纯销售岗位" />
+            <input
+              value={settings.exclusions}
+              onChange={(event) =>
+                onChange({ ...settings, exclusions: event.target.value })
+              }
+            />
           </label>
         </div>
       </section>
@@ -760,11 +915,16 @@ function SettingsView({ onSaved }: { onSaved: () => void }) {
             </div>
             <button
               type="button"
-              className={`switch ${confirmBeforeSend ? "on" : ""}`}
+              className={`switch ${settings.confirmBeforeSend ? "on" : ""}`}
               role="switch"
-              aria-checked={confirmBeforeSend}
+              aria-checked={settings.confirmBeforeSend}
               aria-label="发送前需要确认"
-              onClick={() => setConfirmBeforeSend((value) => !value)}
+              onClick={() =>
+                onChange({
+                  ...settings,
+                  confirmBeforeSend: !settings.confirmBeforeSend,
+                })
+              }
             >
               <span />
             </button>
@@ -776,11 +936,16 @@ function SettingsView({ onSaved }: { onSaved: () => void }) {
             </div>
             <button
               type="button"
-              className={`switch ${avoidWeekends ? "on" : ""}`}
+              className={`switch ${settings.avoidWeekends ? "on" : ""}`}
               role="switch"
-              aria-checked={avoidWeekends}
+              aria-checked={settings.avoidWeekends}
               aria-label="避开周末与夜间"
-              onClick={() => setAvoidWeekends((value) => !value)}
+              onClick={() =>
+                onChange({
+                  ...settings,
+                  avoidWeekends: !settings.avoidWeekends,
+                })
+              }
             >
               <span />
             </button>
@@ -790,7 +955,13 @@ function SettingsView({ onSaved }: { onSaved: () => void }) {
               <strong>单个机会最多主动追问</strong>
               <p>达到次数后自动停止，不形成循环打扰。</p>
             </div>
-            <select defaultValue="2" aria-label="单个机会最多主动追问次数">
+            <select
+              value={settings.maxFollowUps}
+              aria-label="单个机会最多主动追问次数"
+              onChange={(event) =>
+                onChange({ ...settings, maxFollowUps: Number(event.target.value) })
+              }
+            >
               <option value="1">1 次</option>
               <option value="2">2 次</option>
               <option value="3">3 次</option>
@@ -823,12 +994,14 @@ function ConfirmationDialog({
   onDraftChange,
   onClose,
   onConfirm,
+  saving,
 }: {
   task: FollowUpTask;
   draft: string;
   onDraftChange: (draft: string) => void;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: () => Promise<void>;
+  saving: boolean;
 }) {
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
@@ -872,10 +1045,15 @@ function ConfirmationDialog({
           </div>
         </div>
         <footer className="dialog-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>取消</button>
-          <button type="button" className="primary-button" onClick={onConfirm} disabled={!draft.trim()}>
+          <button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => void onConfirm()}
+            disabled={!draft.trim() || saving}
+          >
             <Send size={16} />
-            确认并记录发送
+            {saving ? "正在保存" : "确认并记录发送"}
           </button>
         </footer>
       </section>
@@ -888,31 +1066,28 @@ function NewOpportunityDialog({
   onAdd,
 }: {
   onClose: () => void;
-  onAdd: (opportunity: Opportunity) => void;
+  onAdd: (opportunity: NewOpportunityDraft) => Promise<void>;
 }) {
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
   const [location, setLocation] = useState("上海");
   const [salary, setSalary] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!company.trim() || !role.trim()) return;
-    onAdd({
-      id: `opportunity-${Date.now()}`,
-      company: company.trim(),
-      companyMark: company.trim().slice(0, 1),
-      role: role.trim(),
-      location: location.trim() || "待确认",
-      salary: salary.trim() || "待确认",
-      recruiter: "待补充",
-      source: "手动添加",
-      stage: "applied",
-      stageLabel: "已投递",
-      priority: "normal",
-      lastActivityAt: new Date().toISOString(),
-      resume: "待选择简历",
-    });
+    setSubmitting(true);
+    try {
+      await onAdd({
+        company: company.trim(),
+        role: role.trim(),
+        location: location.trim() || "待确认",
+        salary: salary.trim() || "待确认",
+      });
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -959,10 +1134,10 @@ function NewOpportunityDialog({
           </label>
         </div>
         <footer className="dialog-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>取消</button>
-          <button type="submit" className="primary-button" disabled={!company.trim() || !role.trim()}>
+          <button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>取消</button>
+          <button type="submit" className="primary-button" disabled={!company.trim() || !role.trim() || submitting}>
             <Plus size={16} />
-            加入跟进列表
+            {submitting ? "正在保存" : "加入跟进列表"}
           </button>
         </footer>
       </form>

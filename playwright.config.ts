@@ -6,7 +6,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: "http://localhost:3100",
     trace: "on-first-retry",
   },
   projects: [
@@ -17,9 +17,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
-    url: "http://localhost:3000/api/health",
-    reuseExistingServer: !process.env.CI,
+    command: "node scripts/start-smoke-server.mjs",
+    url: "http://localhost:3100/api/health",
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });
