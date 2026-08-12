@@ -54,8 +54,122 @@ describe("PostgresFollowUpStore", () => {
       { version: 1 },
       { version: 2 },
       { version: 3 },
+      { version: 4 },
     ]);
     await expect(repository.checkHealth()).resolves.toBeUndefined();
+  });
+
+  it("persists pilot requests and activates 30-day access idempotently", async () => {
+    const identity = await repository.createAccount({
+      email: "pilot@example.com",
+      displayName: "首批用户",
+      passwordHash: "password-hash",
+    });
+    const requestedAt = new Date("2026-08-12T08:00:00.000Z");
+    const first = await repository.requestPilotEnrollment(
+      identity.workspaceId,
+      {
+        contactMethod: "wechat",
+        contactValue: "pilot-wechat",
+        note: "面试后追问",
+      },
+      requestedAt,
+    );
+    const repeated = await repository.requestPilotEnrollment(
+      identity.workspaceId,
+      {
+        contactMethod: "phone",
+        contactValue: "13800000000",
+        note: "改用手机联系",
+      },
+      new Date("2026-08-12T09:00:00.000Z"),
+    );
+
+    expect(first.status).toBe("pending_payment");
+    expect(repeated.orderId).toBe(first.orderId);
+    const pendingOperations = await repository.getPilotOperations(requestedAt);
+    expect(pendingOperations.funnel).toMatchObject({
+      registered: 1,
+      purchaseRequested: 1,
+      paymentConfirmed: 0,
+    });
+    expect(pendingOperations.orders[0]).toMatchObject({
+      contactMethod: "phone",
+      contactValue: "13800000000",
+      status: "pending_payment",
+    });
+
+    const paidAt = new Date("2026-08-13T08:00:00.000Z");
+    await repository.confirmPilotPayment(
+      first.orderId!,
+      "admin@example.com",
+      paidAt,
+    );
+    const repeatedConfirmation = await repository.confirmPilotPayment(
+      first.orderId!,
+      "other-admin@example.com",
+      new Date("2026-08-13T09:00:00.000Z"),
+    );
+    expect(repeatedConfirmation.offer.confirmedCount).toBe(1);
+    await expect(repository.getWorkspace(identity.workspaceId, paidAt)).resolves
+      .toMatchObject({
+        pilot: {
+          status: "active",
+          startsAt: paidAt.toISOString(),
+          endsAt: "2026-09-12T08:00:00.000Z",
+        },
+      });
+    await expect(
+      repository.getWorkspace(
+        identity.workspaceId,
+        new Date("2026-09-12T08:00:00.000Z"),
+      ),
+    ).resolves.toMatchObject({ pilot: { status: "expired" } });
+    expect(repeatedConfirmation.orders[0].confirmedBy).toBe("admin@example.com");
+    const commercialEvents = await database.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM audit_events
+       WHERE workspace_id = $1 AND event_type LIKE 'commercial.%'`,
+      [identity.workspaceId],
+    );
+    expect(commercialEvents.rows[0].count).toBe(2);
+  });
+
+  it("rejects an eleventh confirmed pilot payment", async () => {
+    const requests: Array<{ workspaceId: string; orderId: string }> = [];
+    for (let index = 0; index < 11; index += 1) {
+      const identity = await repository.createAccount({
+        email: `capacity-${index}@example.com`,
+        displayName: `名额用户${index}`,
+        passwordHash: "password-hash",
+      });
+      const request = await repository.requestPilotEnrollment(
+        identity.workspaceId,
+        {
+          contactMethod: "email",
+          contactValue: `capacity-${index}@example.com`,
+          note: "",
+        },
+      );
+      requests.push({
+        workspaceId: identity.workspaceId,
+        orderId: request.orderId!,
+      });
+    }
+    for (const request of requests.slice(0, 10)) {
+      await repository.confirmPilotPayment(
+        request.orderId,
+        "admin@example.com",
+      );
+    }
+
+    await expect(repository.getWorkspace(requests[10].workspaceId)).resolves
+      .toMatchObject({ pilot: { status: "full", confirmedCount: 10 } });
+    await expect(
+      repository.confirmPilotPayment(
+        requests[10].orderId,
+        "admin@example.com",
+      ),
+    ).rejects.toBeInstanceOf(RepositoryConflictError);
   });
 
   it("migrates legacy account seeds without deleting real opportunities", async () => {

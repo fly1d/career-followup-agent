@@ -11,6 +11,11 @@ import {
 import type { CandidateSettings } from "@/domain/settings";
 import type { OnboardingInput } from "@/domain/onboarding";
 import type { RateLimitDecision, RateLimitPolicy } from "./rate-limit";
+import type {
+  PilotEnrollment,
+  PilotOperationsSnapshot,
+  PilotRequestInput,
+} from "@/domain/pilot";
 
 export interface FollowUpStore {
   readonly backend: "sqlite" | "postgres";
@@ -59,6 +64,17 @@ export interface FollowUpStore {
     input: OnboardingInput,
     now?: Date,
   ): Promise<ReturnType<FollowUpRepository["completeOnboarding"]>>;
+  requestPilotEnrollment(
+    workspaceId: string,
+    input: PilotRequestInput,
+    now?: Date,
+  ): Promise<PilotEnrollment>;
+  getPilotOperations(now?: Date): Promise<PilotOperationsSnapshot>;
+  confirmPilotPayment(
+    orderId: string,
+    confirmedBy: string,
+    now?: Date,
+  ): Promise<PilotOperationsSnapshot>;
 }
 
 class SqliteFollowUpStore implements FollowUpStore {
@@ -141,6 +157,26 @@ class SqliteFollowUpStore implements FollowUpStore {
     now?: Date,
   ) {
     return this.repository.completeOnboarding(workspaceId, input, now);
+  }
+
+  async requestPilotEnrollment(
+    workspaceId: string,
+    input: PilotRequestInput,
+    now?: Date,
+  ) {
+    return this.repository.requestPilotEnrollment(workspaceId, input, now);
+  }
+
+  async getPilotOperations(now?: Date) {
+    return this.repository.getPilotOperations(now);
+  }
+
+  async confirmPilotPayment(
+    orderId: string,
+    confirmedBy: string,
+    now?: Date,
+  ) {
+    return this.repository.confirmPilotPayment(orderId, confirmedBy, now);
   }
 }
 

@@ -16,6 +16,7 @@ const child = spawn(
       ...process.env,
       DATABASE_PATH: databasePath,
       NEXT_DIST_DIR: ".next-e2e",
+      ADMIN_EMAILS: "e2e-admin-chromium@example.com,e2e-admin-mobile@example.com",
     },
   },
 );

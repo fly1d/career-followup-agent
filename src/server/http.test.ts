@@ -19,6 +19,8 @@ import {
   loginSchema,
   newOpportunitySchema,
   onboardingSchema,
+  pilotAdminActionSchema,
+  pilotRequestSchema,
   registrationSchema,
 } from "./schemas";
 
@@ -156,6 +158,30 @@ describe("API schemas", () => {
         searchStage: "unknown",
         currentOpportunityCount: -1,
       }).success,
+    ).toBe(false);
+  });
+
+  it("validates pilot contact details and admin actions", () => {
+    expect(
+      pilotRequestSchema.safeParse({
+        contactMethod: "wechat",
+        contactValue: "pilot-user",
+        note: "面试后跟进",
+      }).success,
+    ).toBe(true);
+    expect(
+      pilotRequestSchema.safeParse({
+        contactMethod: "telegram",
+        contactValue: " ",
+        note: "x".repeat(501),
+      }).success,
+    ).toBe(false);
+    expect(
+      pilotAdminActionSchema.safeParse({ action: "confirm_payment" }).success,
+    ).toBe(true);
+    expect(
+      pilotAdminActionSchema.safeParse({ action: "activate_without_payment" })
+        .success,
     ).toBe(false);
   });
 

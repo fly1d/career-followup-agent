@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  CircleDollarSign,
   Clock3,
   FileText,
   LayoutDashboard,
@@ -18,12 +19,14 @@ import {
   MessageSquareText,
   MoreHorizontal,
   Plus,
+  Rocket,
   Search,
   Send,
   Settings2,
   ShieldCheck,
   Sparkles,
   Target,
+  Users,
   Wifi,
   WifiOff,
   X,
@@ -36,6 +39,7 @@ import {
   createOpportunity,
   logoutAccount,
   mutateFollowUp,
+  requestPilotEnrollment,
   saveCandidateSettings,
   type AccountUser,
   type NewOpportunityDraft,
@@ -43,8 +47,13 @@ import {
 } from "@/lib/api-client";
 import type { CandidateSettings } from "@/domain/settings";
 import type { OnboardingInput, OnboardingProfile } from "@/domain/onboarding";
+import type {
+  PilotContactMethod,
+  PilotEnrollment,
+  PilotRequestInput,
+} from "@/domain/pilot";
 
-type View = "today" | "opportunities" | "settings";
+type View = "today" | "opportunities" | "pilot" | "settings";
 type QueueTab = "pending" | "scheduled";
 
 const navigation: Array<{
@@ -54,6 +63,7 @@ const navigation: Array<{
 }> = [
   { id: "today", label: "今日", icon: LayoutDashboard },
   { id: "opportunities", label: "机会", icon: BriefcaseBusiness },
+  { id: "pilot", label: "冲刺版", icon: Rocket },
   { id: "settings", label: "设置", icon: Settings2 },
 ];
 
@@ -117,9 +127,11 @@ function todayDateLabel() {
 export function Dashboard({
   initialSnapshot,
   user,
+  isAdmin,
 }: {
   initialSnapshot: WorkspaceSnapshot;
   user: AccountUser;
+  isAdmin: boolean;
 }) {
   const router = useRouter();
   const [view, setView] = useState<View>("today");
@@ -128,6 +140,7 @@ export function Dashboard({
   const [opportunities, setOpportunities] = useState(initialSnapshot.opportunities);
   const [settings, setSettings] = useState(initialSnapshot.settings);
   const [onboarding, setOnboarding] = useState(initialSnapshot.onboarding);
+  const [pilot, setPilot] = useState(initialSnapshot.pilot);
   const [connectionStatus] = useState<ConnectionStatus>("connected");
   const [selectedTask, setSelectedTask] = useState<FollowUpTask | null>(null);
   const [draft, setDraft] = useState("");
@@ -267,6 +280,12 @@ export function Dashboard({
     }
   }
 
+  async function submitPilotRequest(input: PilotRequestInput) {
+    const result = await requestPilotEnrollment(input);
+    setPilot(result.pilot);
+    setToast("申请已提交，我们会联系你确认付款和开通时间");
+  }
+
   async function finishOnboarding(input: OnboardingInput) {
     const result = await completeOnboarding(input);
     setOnboarding(result.onboarding);
@@ -295,6 +314,7 @@ export function Dashboard({
         connectionStatus={connectionStatus}
         targetCities={settings.targetCities}
         user={user}
+        isAdmin={isAdmin}
         loggingOut={loggingOut}
         onLogout={logout}
         onNavigate={(next) => {
@@ -336,6 +356,10 @@ export function Dashboard({
             onSearch={setSearchQuery}
             onAdd={() => setNewOpportunityOpen(true)}
           />
+        )}
+
+        {view === "pilot" && (
+          <PilotView pilot={pilot} onSubmit={submitPilotRequest} />
         )}
 
         {view === "settings" && (
@@ -557,6 +581,7 @@ function Sidebar({
   connectionStatus,
   targetCities,
   user,
+  isAdmin,
   loggingOut,
   onLogout,
   onNavigate,
@@ -567,6 +592,7 @@ function Sidebar({
   connectionStatus: ConnectionStatus;
   targetCities: string;
   user: AccountUser;
+  isAdmin: boolean;
   loggingOut: boolean;
   onLogout: () => Promise<void>;
   onNavigate: (view: View) => void;
@@ -606,6 +632,12 @@ function Sidebar({
             </button>
           );
         })}
+        {isAdmin && (
+          <a className="admin-nav-link" href="/admin">
+            <CircleDollarSign size={18} />
+            <span>首批用户运营</span>
+          </a>
+        )}
       </nav>
 
       <div className="sidebar-status">
@@ -658,6 +690,176 @@ function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+const pilotContactOptions: Array<{
+  value: PilotContactMethod;
+  label: string;
+}> = [
+  { value: "wechat", label: "微信" },
+  { value: "phone", label: "手机" },
+  { value: "email", label: "邮箱" },
+];
+
+function pilotDate(iso: string | null) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function PilotView({
+  pilot,
+  onSubmit,
+}: {
+  pilot: PilotEnrollment;
+  onSubmit: (input: PilotRequestInput) => Promise<void>;
+}) {
+  const [contactMethod, setContactMethod] =
+    useState<PilotContactMethod>("wechat");
+  const [contactValue, setContactValue] = useState("");
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const remaining = Math.max(0, pilot.capacity - pilot.confirmedCount);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!contactValue.trim()) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await onSubmit({
+        contactMethod,
+        contactValue: contactValue.trim(),
+        note: note.trim(),
+      });
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "申请提交失败，请稍后重试。",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="page-content pilot-page">
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">首批付费用户</p>
+          <h1>求职冲刺版</h1>
+          <p>在 30 天求职冲刺期内，把关键追问交给 AI 生成和人工复核。</p>
+        </div>
+        <div className="pilot-price">
+          <strong>¥99</strong>
+          <span>30 天</span>
+        </div>
+      </header>
+
+      <div className="pilot-layout">
+        <section className="pilot-offer">
+          <div className="pilot-offer-heading">
+            <span><Rocket size={21} /></span>
+            <div>
+              <h2>前 10 位用户陪跑</h2>
+              <p>剩余 {remaining} 个确认名额，以实际收款顺序为准。</p>
+            </div>
+          </div>
+          <ul className="pilot-benefits">
+            <li><Check size={16} /><span><strong>智能生成追问</strong><small>结合岗位阶段和沟通承诺生成草稿</small></span></li>
+            <li><Check size={16} /><span><strong>人工复核关键消息</strong><small>敏感或重要追问由运营方协助检查</small></span></li>
+            <li><Check size={16} /><span><strong>30 天求职机会管理</strong><small>保存岗位、追问计划和确认记录</small></span></li>
+          </ul>
+          <p className="pilot-boundary">服务用于提升跟进质量与节奏，不承诺获得面试或 Offer。</p>
+        </section>
+
+        <section className="pilot-action-panel">
+          {pilot.status === "active" || pilot.status === "expired" ? (
+            <div className={`pilot-state ${pilot.status}`}>
+              <span><CheckCircle2 size={24} /></span>
+              <p className="eyebrow">{pilot.status === "active" ? "权益已生效" : "权益已到期"}</p>
+              <h2>{pilot.status === "active" ? "冲刺期正在进行" : "本期服务已结束"}</h2>
+              <p>
+                {pilot.startsAt && pilot.endsAt
+                  ? `${pilotDate(pilot.startsAt)} 至 ${pilotDate(pilot.endsAt)}`
+                  : "权益时间已记录。"}
+              </p>
+            </div>
+          ) : pilot.status === "pending_payment" ? (
+            <div className="pilot-state pending">
+              <span><Clock3 size={24} /></span>
+              <p className="eyebrow">购买申请已提交</p>
+              <h2>等待人工联系确认</h2>
+              <p>我们会通过你填写的方式联系。确认收到 99 元后，30 天权益才会开始。</p>
+              <small>系统不会自动扣款，也不会在未确认收款时开通权益。</small>
+            </div>
+          ) : pilot.status === "full" ? (
+            <div className="pilot-state full">
+              <span><Users size={24} /></span>
+              <p className="eyebrow">首期名额已满</p>
+              <h2>暂不接受新申请</h2>
+              <p>首批 10 位确认名额已经用完，下一期开放后再申请。</p>
+            </div>
+          ) : (
+            <form className="pilot-form" onSubmit={submit}>
+              <div>
+                <p className="eyebrow">申请购买</p>
+                <h2>留下一个联系方式</h2>
+                <p>提交后人工联系确认，不会自动扣款。</p>
+              </div>
+              <fieldset>
+                <legend>联系渠道</legend>
+                <div className="pilot-contact-methods">
+                  {pilotContactOptions.map((option) => (
+                    <label key={option.value} className={contactMethod === option.value ? "selected" : ""}>
+                      <input
+                        type="radio"
+                        name="contactMethod"
+                        value={option.value}
+                        checked={contactMethod === option.value}
+                        onChange={() => setContactMethod(option.value)}
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <label>
+                <span>联系方式</span>
+                <input
+                  value={contactValue}
+                  onChange={(event) => setContactValue(event.target.value)}
+                  maxLength={120}
+                  placeholder={contactMethod === "wechat" ? "微信号" : contactMethod === "phone" ? "手机号" : "邮箱地址"}
+                  required
+                />
+              </label>
+              <label>
+                <span>希望优先解决什么（选填）</span>
+                <textarea
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  maxLength={500}
+                  rows={3}
+                  placeholder="例如：面试后不知道什么时候追问"
+                />
+              </label>
+              <p className="pilot-form-error" role="alert">{error}</p>
+              <button type="submit" className="primary-button" disabled={!contactValue.trim() || submitting}>
+                <CircleDollarSign size={17} />
+                {submitting ? "正在提交" : "申请 99 元冲刺版"}
+              </button>
+            </form>
+          )}
+        </section>
+      </div>
+    </div>
   );
 }
 

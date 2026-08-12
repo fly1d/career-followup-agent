@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import {
   AuthenticationError,
+  AuthorizationError,
   DuplicateAccountError,
   InvalidCredentialsError,
   RateLimitExceededError,
@@ -45,6 +46,12 @@ export function errorResponse(error: unknown) {
     return Response.json(
       { error: { code: "authentication_required", message: "登录已失效，请重新登录。" } },
       { status: 401 },
+    );
+  }
+  if (error instanceof AuthorizationError) {
+    return Response.json(
+      { error: { code: "forbidden", message: "当前账号无权执行此操作。" } },
+      { status: 403 },
     );
   }
   if (error instanceof InvalidCredentialsError) {

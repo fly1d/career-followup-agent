@@ -1,6 +1,11 @@
 "use client";
 
-import { ArrowRight, LockKeyhole, MessageSquareText } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  LockKeyhole,
+  MessageSquareText,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { authenticateAccount } from "@/lib/api-client";
@@ -41,6 +46,29 @@ export function AuthScreen() {
 
   return (
     <main className="auth-shell">
+      <div className="auth-layout">
+      <section className="auth-offer" aria-label="求职冲刺版服务">
+        <header className="auth-brand auth-offer-brand">
+          <span className="brand-mark" aria-hidden="true">
+            <MessageSquareText size={19} strokeWidth={2.2} />
+          </span>
+          <span>
+            <strong>求职跟进</strong>
+            <small>智能追问工作台</small>
+          </span>
+        </header>
+        <div className="auth-offer-content">
+          <p className="eyebrow">首批 10 位用户</p>
+          <h2>求职冲刺版</h2>
+          <div className="auth-offer-price"><strong>¥99</strong><span>/ 30 天</span></div>
+          <ul>
+            <li><Check size={15} />智能生成岗位追问</li>
+            <li><Check size={15} />人工复核关键消息</li>
+            <li><Check size={15} />保存机会与追问记录</li>
+          </ul>
+          <p>先注册体验，再提交购买申请。人工确认收款后开通，不承诺面试或 Offer。</p>
+        </div>
+      </section>
       <section className="auth-workspace" aria-labelledby="auth-title">
         <header className="auth-brand">
           <span className="brand-mark" aria-hidden="true">
@@ -137,6 +165,7 @@ export function AuthScreen() {
 
         <footer className="auth-footer">会话仅保存在此浏览器，并可随时退出。</footer>
       </section>
+      </div>
     </main>
   );
 }

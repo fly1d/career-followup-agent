@@ -13,6 +13,18 @@ import {
   type CandidateSettings,
 } from "@/domain/settings";
 import {
+  PILOT_CAPACITY,
+  PILOT_DURATION_DAYS,
+  PILOT_OFFER_ID,
+  PILOT_PRICE_CENTS,
+  type PilotAdminOrder,
+  type PilotContactMethod,
+  type PilotEnrollment,
+  type PilotFunnel,
+  type PilotOperationsSnapshot,
+  type PilotRequestInput,
+} from "@/domain/pilot";
+import {
   RepositoryConflictError,
   RepositoryNotFoundError,
   type AccountIdentity,
@@ -289,6 +301,31 @@ const postgresOnboardingSchema = `
   ON CONFLICT DO NOTHING;
 `;
 
+const postgresPilotCommerceSchema = `
+  CREATE TABLE pilot_orders (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    offer_id TEXT NOT NULL,
+    contact_method TEXT NOT NULL,
+    contact_value TEXT NOT NULL,
+    note TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending_payment', 'active')),
+    price_cents INTEGER NOT NULL CHECK(price_cents > 0),
+    currency TEXT NOT NULL,
+    requested_at TIMESTAMPTZ NOT NULL,
+    paid_at TIMESTAMPTZ,
+    starts_at TIMESTAMPTZ,
+    ends_at TIMESTAMPTZ,
+    confirmed_by TEXT,
+    updated_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(workspace_id, offer_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX pilot_orders_status_requested_idx
+    ON pilot_orders(status, requested_at);
+`;
+
 function toIsoString(value: unknown) {
   return value instanceof Date
     ? value.toISOString()
@@ -360,6 +397,68 @@ function mapOnboarding(row?: DatabaseRow): OnboardingProfile {
   };
 }
 
+function pilotStatus(
+  row: DatabaseRow | undefined,
+  confirmedCount: number,
+  now: Date,
+): PilotEnrollment["status"] {
+  if (row?.status === "active") {
+    return row.ends_at && toIsoString(row.ends_at) <= now.toISOString()
+      ? "expired"
+      : "active";
+  }
+  if (row) {
+    return confirmedCount >= PILOT_CAPACITY ? "full" : "pending_payment";
+  }
+  return confirmedCount >= PILOT_CAPACITY ? "full" : "available";
+}
+
+function mapPilotEnrollment(
+  row: DatabaseRow | undefined,
+  confirmedCount: number,
+  now: Date,
+): PilotEnrollment {
+  return {
+    offerId: PILOT_OFFER_ID,
+    status: pilotStatus(row, confirmedCount, now),
+    orderId: row ? String(row.id) : null,
+    priceCents: PILOT_PRICE_CENTS,
+    currency: "CNY",
+    durationDays: PILOT_DURATION_DAYS,
+    capacity: PILOT_CAPACITY,
+    confirmedCount,
+    requestedAt: row ? toIsoString(row.requested_at) : null,
+    startsAt: row?.starts_at ? toIsoString(row.starts_at) : null,
+    endsAt: row?.ends_at ? toIsoString(row.ends_at) : null,
+  };
+}
+
+function mapPilotAdminOrder(row: DatabaseRow, now: Date): PilotAdminOrder {
+  const expired =
+    row.status === "active" &&
+    row.ends_at &&
+    toIsoString(row.ends_at) <= now.toISOString();
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    user: {
+      email: String(row.email),
+      displayName: String(row.display_name),
+    },
+    contactMethod: String(row.contact_method) as PilotContactMethod,
+    contactValue: String(row.contact_value),
+    note: String(row.note),
+    status: expired
+      ? "expired"
+      : (String(row.status) as PilotAdminOrder["status"]),
+    requestedAt: toIsoString(row.requested_at),
+    paidAt: row.paid_at ? toIsoString(row.paid_at) : null,
+    startsAt: row.starts_at ? toIsoString(row.starts_at) : null,
+    endsAt: row.ends_at ? toIsoString(row.ends_at) : null,
+    confirmedBy: row.confirmed_by ? String(row.confirmed_by) : null,
+  };
+}
+
 function isDuplicateEmail(error: unknown) {
   if (!(error instanceof Error)) return false;
   const databaseError = error as Error & { code?: string; constraint?: string };
@@ -422,6 +521,7 @@ export class PostgresFollowUpStore implements FollowUpStore {
         [1, postgresSchema],
         [2, postgresAuthRateLimitSchema],
         [3, postgresOnboardingSchema],
+        [4, postgresPilotCommerceSchema],
       ] as const;
       for (const [version, statements] of migrations) {
         if (appliedVersions.has(version)) continue;
@@ -614,10 +714,21 @@ export class PostgresFollowUpStore implements FollowUpStore {
     );
   }
 
-  async getWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
+  async getWorkspace(
+    workspaceId: string,
+    now = new Date(),
+  ): Promise<WorkspaceSnapshot> {
     return this.transaction(
       async (client) => {
-        const [workspace, opportunities, followUps, settings, onboarding] =
+        const [
+          workspace,
+          opportunities,
+          followUps,
+          settings,
+          onboarding,
+          pilot,
+          confirmedPilotOrders,
+        ] =
           await Promise.all([
           client.query("SELECT id FROM workspaces WHERE id = $1", [workspaceId]),
           client.query(
@@ -638,6 +749,13 @@ export class PostgresFollowUpStore implements FollowUpStore {
             "SELECT * FROM workspace_onboarding WHERE workspace_id = $1",
             [workspaceId],
           ),
+          client.query(
+            "SELECT * FROM pilot_orders WHERE workspace_id = $1 AND offer_id = $2",
+            [workspaceId, PILOT_OFFER_ID],
+          ),
+          client.query(
+            "SELECT COUNT(*)::int AS count FROM pilot_orders WHERE status = 'active'",
+          ),
         ]);
         if (workspace.rows.length === 0) {
           throw new RepositoryNotFoundError("Workspace not found");
@@ -649,6 +767,11 @@ export class PostgresFollowUpStore implements FollowUpStore {
             ? mapSettings(settings.rows[0])
             : defaultCandidateSettings,
           onboarding: mapOnboarding(onboarding.rows[0]),
+          pilot: mapPilotEnrollment(
+            pilot.rows[0],
+            Number(confirmedPilotOrders.rows[0].count),
+            now,
+          ),
           storage: "server" as const,
         };
       },
@@ -884,6 +1007,180 @@ export class PostgresFollowUpStore implements FollowUpStore {
         settings,
       };
     });
+  }
+
+  async requestPilotEnrollment(
+    workspaceId: string,
+    input: PilotRequestInput,
+    now = new Date(),
+  ): Promise<PilotEnrollment> {
+    const timestamp = now.toISOString();
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(20260812)");
+      await this.requireWorkspace(client, workspaceId);
+      const [existingResult, countResult] = await Promise.all([
+        client.query(
+          `SELECT * FROM pilot_orders
+           WHERE workspace_id = $1 AND offer_id = $2 FOR UPDATE`,
+          [workspaceId, PILOT_OFFER_ID],
+        ),
+        client.query(
+          "SELECT COUNT(*)::int AS count FROM pilot_orders WHERE status = 'active'",
+        ),
+      ]);
+      const existing = existingResult.rows[0];
+      const confirmedCount = Number(countResult.rows[0].count);
+      if (existing?.status === "active") {
+        return mapPilotEnrollment(existing, confirmedCount, now);
+      }
+      if (!existing && confirmedCount >= PILOT_CAPACITY) {
+        throw new RepositoryConflictError("Pilot capacity has been reached");
+      }
+
+      const orderId = existing ? String(existing.id) : randomUUID();
+      const result = await client.query(
+        `INSERT INTO pilot_orders(
+          id, workspace_id, offer_id, contact_method, contact_value, note,
+          status, price_cents, currency, requested_at, updated_at
+        ) VALUES(
+          $1, $2, $3, $4, $5, $6, 'pending_payment', $7, 'CNY', $8, $8
+        )
+        ON CONFLICT(workspace_id, offer_id) DO UPDATE SET
+          contact_method = EXCLUDED.contact_method,
+          contact_value = EXCLUDED.contact_value,
+          note = EXCLUDED.note,
+          updated_at = EXCLUDED.updated_at
+        RETURNING *`,
+        [
+          orderId,
+          workspaceId,
+          PILOT_OFFER_ID,
+          input.contactMethod,
+          input.contactValue,
+          input.note,
+          PILOT_PRICE_CENTS,
+          timestamp,
+        ],
+      );
+      if (!existing) {
+        await this.audit(
+          client,
+          workspaceId,
+          "commercial.pilot_requested",
+          "pilot_order",
+          orderId,
+          { offerId: PILOT_OFFER_ID, priceCents: PILOT_PRICE_CENTS },
+          timestamp,
+        );
+      }
+      return mapPilotEnrollment(result.rows[0], confirmedCount, now);
+    });
+  }
+
+  async getPilotOperations(now = new Date()): Promise<PilotOperationsSnapshot> {
+    return this.transaction(
+      async (client) => {
+        const [orders, funnelRows] = await Promise.all([
+          client.query(
+            `SELECT pilot_orders.*, users.email, users.display_name
+             FROM pilot_orders
+             JOIN workspace_members
+               ON workspace_members.workspace_id = pilot_orders.workspace_id
+              AND workspace_members.role = 'owner'
+             JOIN users ON users.id = workspace_members.user_id
+             ORDER BY
+               CASE pilot_orders.status WHEN 'pending_payment' THEN 0 ELSE 1 END,
+               pilot_orders.requested_at ASC`,
+          ),
+          client.query(
+            `SELECT
+              COUNT(DISTINCT workspace_id) FILTER (
+                WHERE event_type = 'activation.account_registered'
+              )::int AS registered,
+              COUNT(DISTINCT workspace_id) FILTER (
+                WHERE event_type = 'activation.onboarding_completed'
+              )::int AS onboarded,
+              COUNT(DISTINCT workspace_id) FILTER (
+                WHERE event_type = 'activation.first_opportunity_added'
+              )::int AS first_opportunity_added,
+              COUNT(DISTINCT workspace_id) FILTER (
+                WHERE event_type = 'activation.first_follow_up_confirmed'
+              )::int AS first_follow_up_confirmed
+             FROM audit_events`,
+          ),
+        ]);
+        const confirmedCount = orders.rows.filter(
+          (row) => row.status === "active",
+        ).length;
+        const funnelRow = funnelRows.rows[0];
+        const funnel: PilotFunnel = {
+          registered: Number(funnelRow.registered),
+          onboarded: Number(funnelRow.onboarded),
+          firstOpportunityAdded: Number(funnelRow.first_opportunity_added),
+          firstFollowUpConfirmed: Number(funnelRow.first_follow_up_confirmed),
+          purchaseRequested: orders.rows.length,
+          paymentConfirmed: confirmedCount,
+        };
+        return {
+          offer: {
+            offerId: PILOT_OFFER_ID,
+            priceCents: PILOT_PRICE_CENTS,
+            currency: "CNY" as const,
+            durationDays: PILOT_DURATION_DAYS,
+            capacity: PILOT_CAPACITY,
+            confirmedCount,
+            remainingCount: Math.max(0, PILOT_CAPACITY - confirmedCount),
+          },
+          funnel,
+          orders: orders.rows.map((row) => mapPilotAdminOrder(row, now)),
+        };
+      },
+      "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+    );
+  }
+
+  async confirmPilotPayment(
+    orderId: string,
+    confirmedBy: string,
+    now = new Date(),
+  ): Promise<PilotOperationsSnapshot> {
+    const timestamp = now.toISOString();
+    const endsAt = new Date(
+      now.getTime() + PILOT_DURATION_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    await this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(20260812)");
+      const result = await client.query(
+        "SELECT * FROM pilot_orders WHERE id = $1 FOR UPDATE",
+        [orderId],
+      );
+      const order = result.rows[0];
+      if (!order) throw new RepositoryNotFoundError("Pilot order not found");
+      if (order.status === "active") return;
+      const count = await client.query(
+        "SELECT COUNT(*)::int AS count FROM pilot_orders WHERE status = 'active'",
+      );
+      if (Number(count.rows[0].count) >= PILOT_CAPACITY) {
+        throw new RepositoryConflictError("Pilot capacity has been reached");
+      }
+      await client.query(
+        `UPDATE pilot_orders SET
+          status = 'active', paid_at = $1, starts_at = $1, ends_at = $2,
+          confirmed_by = $3, updated_at = $1
+         WHERE id = $4 AND status = 'pending_payment'`,
+        [timestamp, endsAt, confirmedBy, orderId],
+      );
+      await this.audit(
+        client,
+        String(order.workspace_id),
+        "commercial.payment_confirmed",
+        "pilot_order",
+        orderId,
+        { offerId: PILOT_OFFER_ID, endsAt },
+        timestamp,
+      );
+    });
+    return this.getPilotOperations(now);
   }
 
   private async initializeAccountWorkspace(

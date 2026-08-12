@@ -1,12 +1,18 @@
 import type { FollowUpTask, Opportunity } from "@/data/demo";
 import type { CandidateSettings } from "@/domain/settings";
 import type { OnboardingInput, OnboardingProfile } from "@/domain/onboarding";
+import type {
+  PilotEnrollment,
+  PilotOperationsSnapshot,
+  PilotRequestInput,
+} from "@/domain/pilot";
 
 export interface WorkspaceSnapshot {
   followUps: FollowUpTask[];
   opportunities: Opportunity[];
   settings: CandidateSettings;
   onboarding: OnboardingProfile;
+  pilot: PilotEnrollment;
   storage: "server";
 }
 
@@ -86,6 +92,23 @@ export function completeOnboarding(input: OnboardingInput) {
     method: "PATCH",
     body: JSON.stringify(input),
   });
+}
+
+export function requestPilotEnrollment(input: PilotRequestInput) {
+  return requestJson<{ pilot: PilotEnrollment }>("/api/pilot", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function confirmPilotPayment(orderId: string) {
+  return requestJson<PilotOperationsSnapshot>(
+    `/api/admin/pilot/${encodeURIComponent(orderId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ action: "confirm_payment" }),
+    },
+  );
 }
 
 export function authenticateAccount(
