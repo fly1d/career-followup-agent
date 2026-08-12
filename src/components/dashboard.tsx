@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  ArrowRight,
   Bell,
   BriefcaseBusiness,
   CalendarClock,
@@ -22,6 +23,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Target,
   Wifi,
   WifiOff,
   X,
@@ -30,6 +32,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { FollowUpTask, Opportunity } from "@/data/demo";
 import {
+  completeOnboarding,
   createOpportunity,
   logoutAccount,
   mutateFollowUp,
@@ -39,6 +42,7 @@ import {
   type WorkspaceSnapshot,
 } from "@/lib/api-client";
 import type { CandidateSettings } from "@/domain/settings";
+import type { OnboardingInput, OnboardingProfile } from "@/domain/onboarding";
 
 type View = "today" | "opportunities" | "settings";
 type QueueTab = "pending" | "scheduled";
@@ -123,6 +127,7 @@ export function Dashboard({
   const [followUps, setFollowUps] = useState(initialSnapshot.followUps);
   const [opportunities, setOpportunities] = useState(initialSnapshot.opportunities);
   const [settings, setSettings] = useState(initialSnapshot.settings);
+  const [onboarding, setOnboarding] = useState(initialSnapshot.onboarding);
   const [connectionStatus] = useState<ConnectionStatus>("connected");
   const [selectedTask, setSelectedTask] = useState<FollowUpTask | null>(null);
   const [draft, setDraft] = useState("");
@@ -262,6 +267,26 @@ export function Dashboard({
     }
   }
 
+  async function finishOnboarding(input: OnboardingInput) {
+    const result = await completeOnboarding(input);
+    setOnboarding(result.onboarding);
+    setSettings(result.settings);
+    setNewOpportunityOpen(true);
+    setToast("求职目标已保存");
+  }
+
+  if (!onboarding.completedAt) {
+    return (
+      <OnboardingExperience
+        initialProfile={onboarding}
+        user={user}
+        loggingOut={loggingOut}
+        onComplete={finishOnboarding}
+        onLogout={logout}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -338,6 +363,8 @@ export function Dashboard({
 
       {newOpportunityOpen && (
         <NewOpportunityDialog
+          defaultLocation={settings.targetCities}
+          defaultRole={settings.targetRoles}
           onClose={() => setNewOpportunityOpen(false)}
           onAdd={addOpportunity}
         />
@@ -350,6 +377,177 @@ export function Dashboard({
         </div>
       )}
     </div>
+  );
+}
+
+const stageOptions: Array<{
+  value: OnboardingInput["searchStage"];
+  label: string;
+  description: string;
+}> = [
+  { value: "preparing", label: "准备投递", description: "正在完善材料" },
+  { value: "actively_applying", label: "持续投递", description: "已有目标岗位" },
+  { value: "interviewing", label: "面试进行中", description: "需要管理反馈" },
+  { value: "offer_decision", label: "Offer 决策", description: "正在比较机会" },
+];
+
+function OnboardingExperience({
+  initialProfile,
+  user,
+  loggingOut,
+  onComplete,
+  onLogout,
+}: {
+  initialProfile: OnboardingProfile;
+  user: AccountUser;
+  loggingOut: boolean;
+  onComplete: (input: OnboardingInput) => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
+  const [targetRole, setTargetRole] = useState(initialProfile.targetRole);
+  const [targetCity, setTargetCity] = useState(initialProfile.targetCity);
+  const [searchStage, setSearchStage] = useState(initialProfile.searchStage);
+  const [currentOpportunityCount, setCurrentOpportunityCount] = useState(
+    initialProfile.currentOpportunityCount,
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!targetRole.trim() || !targetCity.trim()) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await onComplete({
+        targetRole: targetRole.trim(),
+        targetCity: targetCity.trim(),
+        searchStage,
+        currentOpportunityCount,
+      });
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "保存失败，请稍后重试。",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="onboarding-shell">
+      <aside className="onboarding-context">
+        <div className="brand-lockup onboarding-brand">
+          <div className="brand-mark" aria-hidden="true">
+            <MessageSquareText size={19} strokeWidth={2.2} />
+          </div>
+          <div>
+            <strong>求职跟进</strong>
+            <span>智能追问工作台</span>
+          </div>
+        </div>
+        <div className="onboarding-progress" aria-label="账号设置进度">
+          <div className="complete"><Check size={15} /><span>账号已创建</span></div>
+          <div className="active"><span>2</span><strong>设置求职目标</strong></div>
+          <div><span>3</span><strong>添加真实机会</strong></div>
+        </div>
+        <div className="onboarding-account">
+          <span>{user.displayName.slice(0, 2)}</span>
+          <div><strong>{user.displayName}</strong><small>{user.email}</small></div>
+          <button
+            type="button"
+            className="icon-button subtle"
+            aria-label="退出登录"
+            title="退出登录"
+            disabled={loggingOut}
+            onClick={() => void onLogout()}
+          >
+            <LogOut size={16} />
+          </button>
+        </div>
+      </aside>
+
+      <section className="onboarding-main">
+        <form className="onboarding-form" onSubmit={submit}>
+          <header>
+            <span className="onboarding-icon"><Target size={20} /></span>
+            <p className="eyebrow">求职目标</p>
+            <h1>先确认你正在找什么</h1>
+            <p>这些信息会用于安排后续追问；稍后可以在设置中修改。</p>
+          </header>
+
+          <div className="onboarding-fields">
+            <label>
+              <span>目标岗位</span>
+              <input
+                value={targetRole}
+                onChange={(event) => setTargetRole(event.target.value)}
+                placeholder="例如：AI 产品经理"
+                autoComplete="organization-title"
+                autoFocus
+              />
+            </label>
+            <label>
+              <span>目标城市</span>
+              <div className="field-with-icon">
+                <MapPin size={16} />
+                <input
+                  value={targetCity}
+                  onChange={(event) => setTargetCity(event.target.value)}
+                  placeholder="例如：上海"
+                  autoComplete="address-level2"
+                />
+              </div>
+            </label>
+          </div>
+
+          <fieldset className="onboarding-fieldset">
+            <legend>目前处于哪个阶段</legend>
+            <div className="stage-options">
+              {stageOptions.map((option) => (
+                <label key={option.value} className={searchStage === option.value ? "selected" : ""}>
+                  <input
+                    type="radio"
+                    name="search-stage"
+                    value={option.value}
+                    checked={searchStage === option.value}
+                    onChange={() => setSearchStage(option.value)}
+                  />
+                  <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                  <Check size={15} />
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <label className="opportunity-count-field">
+            <span>目前有多少个机会需要跟进</span>
+            <input
+              type="number"
+              min="0"
+              max="500"
+              value={currentOpportunityCount}
+              onChange={(event) =>
+                setCurrentOpportunityCount(Number(event.target.value))
+              }
+            />
+            <small>个</small>
+          </label>
+
+          <p className="onboarding-error" role="alert">{error}</p>
+          <button
+            type="submit"
+            className="primary-button onboarding-submit"
+            disabled={!targetRole.trim() || !targetCity.trim() || submitting}
+          >
+            {submitting ? "正在保存" : "保存并添加第一个机会"}
+            {!submitting && <ArrowRight size={17} />}
+          </button>
+        </form>
+      </section>
+    </main>
   );
 }
 
@@ -546,6 +744,31 @@ function TodayView({
   onSkip: (task: FollowUpTask) => void;
   onAdd: () => void;
 }) {
+  if (opportunityCount === 0) {
+    return (
+      <div className="page-content first-opportunity-page">
+        <header className="page-header">
+          <div>
+            <p className="eyebrow">工作区已就绪</p>
+            <h1>添加第一个真实机会</h1>
+            <p>从一个正在投递或等待回复的岗位开始。</p>
+          </div>
+        </header>
+        <section className="first-opportunity-action">
+          <span><BriefcaseBusiness size={24} /></span>
+          <div>
+            <h2>还没有求职机会</h2>
+            <p>记录公司和岗位后，系统会创建第一次追问计划。</p>
+          </div>
+          <button type="button" className="primary-button" onClick={onAdd}>
+            <Plus size={17} />
+            添加真实机会
+          </button>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="page-content">
       <header className="page-header">
@@ -803,13 +1026,15 @@ function OpportunitiesView({
       </section>
 
       <section className="opportunity-table" aria-label="求职机会列表">
-        <div className="table-header">
-          <span>公司与岗位</span>
-          <span>当前阶段</span>
-          <span>下一次跟进</span>
-          <span>使用简历</span>
-          <span />
-        </div>
+        {opportunities.length > 0 && (
+          <div className="table-header">
+            <span>公司与岗位</span>
+            <span>当前阶段</span>
+            <span>下一次跟进</span>
+            <span>使用简历</span>
+            <span />
+          </div>
+        )}
         {filtered.map((item) => (
           <article className="opportunity-row" key={item.id}>
             <div className="company-identity">
@@ -837,9 +1062,14 @@ function OpportunitiesView({
         ))}
         {filtered.length === 0 && (
           <div className="empty-state compact-empty">
-            <Search size={25} />
-            <strong>没有匹配的机会</strong>
-            <p>换一个公司、岗位或城市关键词试试。</p>
+            {opportunities.length === 0 ? <BriefcaseBusiness size={25} /> : <Search size={25} />}
+            <strong>{opportunities.length === 0 ? "添加第一个真实机会" : "没有匹配的机会"}</strong>
+            <p>{opportunities.length === 0 ? "记录正在投递或等待回复的岗位。" : "换一个公司、岗位或城市关键词试试。"}</p>
+            {opportunities.length === 0 && (
+              <button type="button" className="primary-button" onClick={onAdd}>
+                <Plus size={16} />添加机会
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -1014,9 +1244,11 @@ function SettingsView({
           </div>
         </div>
         <div className="memory-items">
-          <div><span>长期事实</span><strong>最早到岗：2026 年 9 月 15 日</strong><small>用户确认 · 今天更新</small></div>
-          <div><span>沟通偏好</span><strong>不主动透露当前薪资</strong><small>适用于所有机会</small></div>
-          <div><span>单次决定</span><strong>澄屿科技：可接受三天到岗</strong><small>仅适用于该机会</small></div>
+          <div className="memory-empty">
+            <Archive size={18} />
+            <strong>还没有已确认的记忆</strong>
+            <small>后续追问确认的信息会保存在这里。</small>
+          </div>
         </div>
       </section>
     </div>
@@ -1097,15 +1329,19 @@ function ConfirmationDialog({
 }
 
 function NewOpportunityDialog({
+  defaultLocation,
+  defaultRole,
   onClose,
   onAdd,
 }: {
+  defaultLocation: string;
+  defaultRole: string;
   onClose: () => void;
   onAdd: (opportunity: NewOpportunityDraft) => Promise<void>;
 }) {
   const [company, setCompany] = useState("");
-  const [role, setRole] = useState("");
-  const [location, setLocation] = useState("上海");
+  const [role, setRole] = useState(defaultRole);
+  const [location, setLocation] = useState(defaultLocation);
   const [salary, setSalary] = useState("");
   const [submitting, setSubmitting] = useState(false);
 

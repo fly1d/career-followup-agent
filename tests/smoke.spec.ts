@@ -12,14 +12,49 @@ function accountFor(testInfo: TestInfo, suffix = "") {
   };
 }
 
-async function register(page: Page, testInfo: TestInfo, suffix = "") {
+async function registerUnonboarded(page: Page, testInfo: TestInfo, suffix = "") {
   const account = accountFor(testInfo, suffix);
   const response = await page.request.post("/api/auth/register", { data: account });
   expect(response.status()).toBe(201);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "今日待跟进" })).toBeVisible();
-  await expect(page.getByText("账号数据已同步")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "先确认你正在找什么" }),
+  ).toBeVisible();
   return account;
+}
+
+async function finishOnboarding(page: Page) {
+  await page.getByRole("textbox", { name: "目标岗位", exact: true }).fill("AI 产品经理");
+  await page.getByRole("textbox", { name: "目标城市", exact: true }).fill("上海");
+  await page.getByRole("spinbutton").fill("2");
+  await page.getByRole("button", { name: "保存并添加第一个机会" }).click();
+  const dialog = page.getByRole("dialog", { name: "添加求职机会" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "关闭" }).click();
+  await expect(
+    page.getByRole("heading", { name: "添加第一个真实机会" }),
+  ).toBeVisible();
+}
+
+async function register(page: Page, testInfo: TestInfo, suffix = "") {
+  const account = await registerUnonboarded(page, testInfo, suffix);
+  await finishOnboarding(page);
+  return account;
+}
+
+async function createTestOpportunity(page: Page, company = "云帆软件") {
+  const response = await page.request.post("/api/opportunities", {
+    data: {
+      company,
+      role: "AI 产品经理",
+      location: "上海",
+      salary: "30-42K",
+    },
+  });
+  expect(response.status()).toBe(201);
+  const created = await response.json();
+  await page.reload();
+  return created;
 }
 
 async function navigate(page: Page, name: "今日" | "机会" | "设置") {
@@ -35,9 +70,18 @@ test("requires authentication for private APIs", async ({ request }) => {
   const opportunity = await request.post("/api/opportunities", {
     data: { company: "未授权公司", role: "产品经理" },
   });
+  const onboarding = await request.patch("/api/onboarding", {
+    data: {
+      targetRole: "产品经理",
+      targetCity: "上海",
+      searchStage: "actively_applying",
+      currentOpportunityCount: 0,
+    },
+  });
 
   expect(workspace.status()).toBe(401);
   expect(opportunity.status()).toBe(401);
+  expect(onboarding.status()).toBe(401);
   await expect(workspace.json()).resolves.toMatchObject({
     error: { code: "authentication_required" },
   });
@@ -61,7 +105,39 @@ test("registers through the UI and receives a protected session cookie", async (
     (cookie) => cookie.name === "career_session",
   );
   expect(sessionCookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
-  await expect(page.getByRole("heading", { name: "今日待跟进" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "先确认你正在找什么" }),
+  ).toBeVisible();
+  const workspace = await page.request.get("/api/workspace");
+  await expect(workspace.json()).resolves.toMatchObject({
+    opportunities: [],
+    followUps: [],
+    onboarding: { completedAt: null },
+  });
+});
+
+test("persists onboarding and starts with an empty real workspace", async ({
+  page,
+}, testInfo) => {
+  await registerUnonboarded(page, testInfo);
+  await finishOnboarding(page);
+
+  const workspace = await page.request.get("/api/workspace");
+  await expect(workspace.json()).resolves.toMatchObject({
+    opportunities: [],
+    followUps: [],
+    onboarding: {
+      targetRole: "AI 产品经理",
+      targetCity: "上海",
+      searchStage: "actively_applying",
+      currentOpportunityCount: 2,
+      completedAt: expect.any(String),
+    },
+  });
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "添加第一个真实机会" }),
+  ).toBeVisible();
 });
 
 test("rate limits repeated invalid logins", async ({ page }, testInfo) => {
@@ -101,19 +177,27 @@ test("logs out, logs back in, and keeps the account session across reloads", asy
   await page.getByLabel("邮箱").fill(account.email);
   await page.getByLabel("密码").fill(account.password);
   await page.locator("form").getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "今日待跟进" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "添加第一个真实机会" }),
+  ).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "今日待跟进" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "添加第一个真实机会" }),
+  ).toBeVisible();
 });
 
 test("loads today's follow-up queue", async ({ page }, testInfo) => {
   await register(page, testInfo);
+  await createTestOpportunity(page);
+  await page.getByRole("button", { name: /已安排/ }).click();
   await expect(page.locator(".follow-up-card").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "确认发送" }).first()).toBeVisible();
 });
 
 test("can confirm a follow-up draft", async ({ page }, testInfo) => {
   await register(page, testInfo);
+  await createTestOpportunity(page);
+  await page.getByRole("button", { name: /已安排/ }).click();
   await page.getByRole("button", { name: "确认发送" }).first().click();
 
   await expect(page.getByRole("dialog", { name: "确认追问内容" })).toBeVisible();
@@ -123,6 +207,7 @@ test("can confirm a follow-up draft", async ({ page }, testInfo) => {
 
 test("switches to opportunity management", async ({ page }, testInfo) => {
   await register(page, testInfo);
+  await createTestOpportunity(page);
   await navigate(page, "机会");
 
   await expect(page.getByRole("heading", { name: "求职机会" })).toBeVisible();
@@ -132,7 +217,7 @@ test("switches to opportunity management", async ({ page }, testInfo) => {
 test("persists a new opportunity across reloads", async ({ page }, testInfo) => {
   const company = `烟霞系统-${testInfo.project.name}`;
   await register(page, testInfo);
-  await page.getByRole("button", { name: "添加机会" }).first().click();
+  await page.getByRole("button", { name: "添加真实机会" }).click();
 
   const dialog = page.getByRole("dialog", { name: "添加求职机会" });
   await dialog.getByLabel("公司名称").fill(company);
@@ -162,12 +247,11 @@ test("persists candidate settings across reloads", async ({ page }, testInfo) =>
 test("keeps account workspaces isolated", async ({ browser, page }, testInfo) => {
   const privateCompany = `仅账号一可见-${testInfo.project.name}`;
   await register(page, testInfo, "-owner");
-  const firstWorkspace = await page.request.get("/api/workspace");
-  const firstSnapshot = await firstWorkspace.json();
   const created = await page.request.post("/api/opportunities", {
     data: { company: privateCompany, role: "平台产品经理", location: "上海", salary: "" },
   });
   expect(created.status()).toBe(201);
+  const createdRecord = await created.json();
 
   const secondContext = await browser.newContext({ baseURL: "http://localhost:3100" });
   const secondPage = await secondContext.newPage();
@@ -177,7 +261,7 @@ test("keeps account workspaces isolated", async ({ browser, page }, testInfo) =>
     await expect(secondPage.getByText(privateCompany)).toHaveCount(0);
 
     const foreignMutation = await secondPage.request.patch(
-      `/api/follow-ups/${firstSnapshot.followUps[0].id}`,
+      `/api/follow-ups/${createdRecord.followUp.id}`,
       { data: { action: "skip" } },
     );
     expect(foreignMutation.status()).toBe(404);

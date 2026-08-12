@@ -51,6 +51,18 @@ describe("SqliteFollowUpStore", () => {
     );
     await repository.clearRateLimit("clear-store-key", clearDecision.revision);
 
+    const completed = await repository.completeOnboarding(
+      identity.workspaceId,
+      {
+        targetRole: "平台产品经理",
+        targetCity: "上海",
+        searchStage: "actively_applying",
+        currentOpportunityCount: 1,
+      },
+      createdAt,
+    );
+    expect(completed.onboarding.completedAt).toBe(createdAt.toISOString());
+
     const created = await repository.createOpportunity(
       identity.workspaceId,
       {

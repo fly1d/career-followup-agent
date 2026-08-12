@@ -9,6 +9,7 @@ import {
   type WorkspaceSnapshot,
 } from "./repository";
 import type { CandidateSettings } from "@/domain/settings";
+import type { OnboardingInput } from "@/domain/onboarding";
 import type { RateLimitDecision, RateLimitPolicy } from "./rate-limit";
 
 export interface FollowUpStore {
@@ -53,6 +54,11 @@ export interface FollowUpStore {
     settings: CandidateSettings,
     now?: Date,
   ): Promise<CandidateSettings>;
+  completeOnboarding(
+    workspaceId: string,
+    input: OnboardingInput,
+    now?: Date,
+  ): Promise<ReturnType<FollowUpRepository["completeOnboarding"]>>;
 }
 
 class SqliteFollowUpStore implements FollowUpStore {
@@ -127,6 +133,14 @@ class SqliteFollowUpStore implements FollowUpStore {
     now?: Date,
   ) {
     return this.repository.updateSettings(workspaceId, settings, now);
+  }
+
+  async completeOnboarding(
+    workspaceId: string,
+    input: OnboardingInput,
+    now?: Date,
+  ) {
+    return this.repository.completeOnboarding(workspaceId, input, now);
   }
 }
 

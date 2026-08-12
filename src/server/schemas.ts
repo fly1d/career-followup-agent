@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { searchStages } from "@/domain/onboarding";
 
 const requiredText = (label: string, maximum: number) =>
   z
@@ -37,6 +38,13 @@ export const newOpportunitySchema = z.object({
   role: requiredText("岗位名称", 120),
   location: z.string().trim().max(80).default(""),
   salary: z.string().trim().max(80).default(""),
+});
+
+export const onboardingSchema = z.object({
+  targetRole: requiredText("目标岗位", 120),
+  targetCity: requiredText("目标城市", 80),
+  searchStage: z.enum(searchStages),
+  currentOpportunityCount: z.number().int().min(0).max(500),
 });
 
 export const followUpMutationSchema = z.discriminatedUnion("action", [

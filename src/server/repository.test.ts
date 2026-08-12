@@ -53,7 +53,68 @@ describe("FollowUpRepository", () => {
     database.close();
     repository = createFollowUpRepository(join(directory, "test.db"));
 
-    expect(migrations).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    expect(migrations).toEqual([
+      { version: 1 },
+      { version: 2 },
+      { version: 3 },
+      { version: 4 },
+    ]);
+  });
+
+  it("removes legacy seeded records while preserving real account opportunities", () => {
+    const identity = repository.createAccount({
+      email: "legacy@example.com",
+      displayName: "历史用户",
+      passwordHash: "password-hash",
+    });
+    const real = repository.createOpportunity(identity.workspaceId, {
+      company: "真实公司",
+      role: "产品经理",
+      location: "上海",
+      salary: "",
+    });
+    repository.close();
+
+    const database = new DatabaseSync(join(directory, "test.db"));
+    database
+      .prepare(
+        `INSERT INTO opportunities(
+          id, workspace_id, company, company_mark, role, location, salary,
+          recruiter, source, stage, stage_label, priority, last_activity_at,
+          next_follow_up_at, resume, created_at, updated_at
+        )
+        SELECT
+          'legacy-seed-opportunity', workspace_id, '演示公司', '演', role,
+          location, salary, recruiter, '演示数据', stage, stage_label, priority,
+          last_activity_at, NULL, resume, created_at, updated_at
+        FROM opportunities WHERE id = ?`,
+      )
+      .run(real.opportunity.id);
+    database
+      .prepare(
+        `INSERT INTO audit_events(
+          workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+        ) VALUES(?, 'workspace.seeded', 'workspace', ?, '{}', ?)`,
+      )
+      .run(identity.workspaceId, identity.workspaceId, new Date().toISOString());
+    database
+      .prepare("DELETE FROM audit_events WHERE workspace_id = ? AND event_type LIKE 'activation.%'")
+      .run(identity.workspaceId);
+    database.exec(`
+      DROP INDEX activation_events_workspace_type_idx;
+      DROP TABLE workspace_onboarding;
+      DELETE FROM schema_migrations WHERE version = 4;
+    `);
+    database.close();
+
+    repository = createFollowUpRepository(join(directory, "test.db"));
+    const snapshot = repository.getWorkspace(identity.workspaceId);
+    expect(snapshot.opportunities.map((item) => item.id)).toEqual([
+      real.opportunity.id,
+    ]);
+    expect(snapshot.followUps).toHaveLength(1);
+    expect(snapshot.onboarding.completedAt).toBeNull();
+    expect(repository.countAuditEvents(identity.workspaceId)).toBe(5);
   });
 
   it("creates an opportunity and its first scheduled follow-up atomically", () => {
@@ -159,7 +220,7 @@ describe("FollowUpRepository", () => {
     expect(saved.confirmBeforeSend).toBe(false);
   });
 
-  it("creates isolated account workspaces with independent example records", () => {
+  it("creates isolated empty account workspaces and records activation once", () => {
     const first = repository.createAccount({
       email: "FIRST@EXAMPLE.COM",
       displayName: "林岚",
@@ -175,15 +236,52 @@ describe("FollowUpRepository", () => {
     expect(first.workspaceId).not.toBe(second.workspaceId);
     const firstSnapshot = repository.getWorkspace(first.workspaceId);
     const secondSnapshot = repository.getWorkspace(second.workspaceId);
-    expect(firstSnapshot.opportunities).toHaveLength(4);
-    expect(secondSnapshot.opportunities).toHaveLength(4);
-    expect(firstSnapshot.opportunities[0].id).not.toBe(
-      secondSnapshot.opportunities[0].id,
+    expect(firstSnapshot.opportunities).toEqual([]);
+    expect(firstSnapshot.followUps).toEqual([]);
+    expect(firstSnapshot.onboarding.completedAt).toBeNull();
+    expect(secondSnapshot.opportunities).toEqual([]);
+
+    const completed = repository.completeOnboarding(
+      first.workspaceId,
+      {
+        targetRole: "AI 产品经理",
+        targetCity: "上海",
+        searchStage: "actively_applying",
+        currentOpportunityCount: 3,
+      },
+      new Date("2026-08-12T08:00:00.000Z"),
     );
+    const repeated = repository.completeOnboarding(
+      first.workspaceId,
+      {
+        targetRole: "平台产品经理",
+        targetCity: "上海、苏州",
+        searchStage: "interviewing",
+        currentOpportunityCount: 4,
+      },
+      new Date("2026-08-12T09:00:00.000Z"),
+    );
+    expect(completed.onboarding.completedAt).toBe("2026-08-12T08:00:00.000Z");
+    expect(repeated.onboarding.completedAt).toBe(completed.onboarding.completedAt);
+    expect(repository.countAuditEvents(first.workspaceId)).toBe(2);
+
+    const firstCreated = repository.createOpportunity(first.workspaceId, {
+      company: "云帆软件",
+      role: "平台产品经理",
+      location: "上海",
+      salary: "30-40K",
+    });
+    repository.createOpportunity(first.workspaceId, {
+      company: "山海数据",
+      role: "产品负责人",
+      location: "苏州",
+      salary: "",
+    });
+    expect(repository.countAuditEvents(first.workspaceId)).toBe(6);
     expect(() =>
       repository.updateFollowUp(
         second.workspaceId,
-        firstSnapshot.followUps[0].id,
+        firstCreated.followUp.id,
         { action: "skip" },
       ),
     ).toThrow(RepositoryNotFoundError);

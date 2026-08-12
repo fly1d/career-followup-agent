@@ -18,6 +18,7 @@ import {
   followUpMutationSchema,
   loginSchema,
   newOpportunitySchema,
+  onboardingSchema,
   registrationSchema,
 } from "./schemas";
 
@@ -135,6 +136,25 @@ describe("API schemas", () => {
         maxFollowUps: 8,
         deliveryStart: "25:00",
         deliveryEnd: "18:30",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates onboarding stages and opportunity counts", () => {
+    expect(
+      onboardingSchema.safeParse({
+        targetRole: "产品经理",
+        targetCity: "上海",
+        searchStage: "interviewing",
+        currentOpportunityCount: 3,
+      }).success,
+    ).toBe(true);
+    expect(
+      onboardingSchema.safeParse({
+        targetRole: "产品经理",
+        targetCity: "上海",
+        searchStage: "unknown",
+        currentOpportunityCount: -1,
       }).success,
     ).toBe(false);
   });

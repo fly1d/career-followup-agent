@@ -82,6 +82,320 @@ select:focus-visible {
   min-height: 100vh;
 }
 
+.onboarding-shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: minmax(260px, 30%) minmax(0, 1fr);
+  background: var(--surface);
+}
+
+.onboarding-context {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  padding: 34px clamp(28px, 4vw, 64px);
+  background: var(--sidebar);
+  color: #f4f7f5;
+}
+
+.onboarding-brand {
+  padding: 0;
+}
+
+.onboarding-progress {
+  display: grid;
+  gap: 23px;
+  margin-top: clamp(76px, 16vh, 150px);
+}
+
+.onboarding-progress > div {
+  position: relative;
+  display: grid;
+  min-height: 30px;
+  grid-template-columns: 30px 1fr;
+  align-items: center;
+  gap: 12px;
+  color: #89948f;
+}
+
+.onboarding-progress > div:not(:last-child)::after {
+  position: absolute;
+  top: 30px;
+  bottom: -23px;
+  left: 14px;
+  width: 1px;
+  background: #39423e;
+  content: "";
+}
+
+.onboarding-progress > div > span:first-child,
+.onboarding-progress > div > svg {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #46504b;
+  border-radius: 50%;
+  padding: 7px;
+  color: #9ba6a1;
+  font-size: 10px;
+  text-align: center;
+}
+
+.onboarding-progress > div > strong,
+.onboarding-progress > div > span:last-child {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.onboarding-progress > div.complete {
+  color: #aab4af;
+}
+
+.onboarding-progress > div.complete > svg {
+  border-color: #3e8067;
+  background: #286049;
+  color: #ffffff;
+}
+
+.onboarding-progress > div.active {
+  color: #ffffff;
+}
+
+.onboarding-progress > div.active > span:first-child {
+  border-color: #79c3a5;
+  background: #d9f0e5;
+  color: var(--green-dark);
+}
+
+.onboarding-account {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 34px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  border-top: 1px solid #303936;
+  padding-top: 20px;
+}
+
+.onboarding-account > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: #3b4742;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.onboarding-account strong,
+.onboarding-account small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-account strong {
+  font-size: 11px;
+}
+
+.onboarding-account small {
+  margin-top: 3px;
+  color: var(--sidebar-muted);
+  font-size: 9px;
+}
+
+.onboarding-account .icon-button {
+  color: var(--sidebar-muted);
+}
+
+.onboarding-main {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  padding: 48px clamp(28px, 8vw, 120px);
+}
+
+.onboarding-form {
+  width: min(680px, 100%);
+}
+
+.onboarding-form header {
+  margin-bottom: 32px;
+}
+
+.onboarding-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  margin-bottom: 18px;
+  border-radius: 7px;
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.onboarding-form h1 {
+  margin: 6px 0 8px;
+  font-size: 28px;
+  font-weight: 720;
+  line-height: 1.3;
+}
+
+.onboarding-form header > p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.onboarding-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.onboarding-fields label,
+.opportunity-count-field {
+  display: grid;
+  gap: 7px;
+}
+
+.onboarding-fields label > span,
+.opportunity-count-field > span,
+.onboarding-fieldset legend {
+  color: #59645f;
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.onboarding-fields input,
+.opportunity-count-field input {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0 11px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.onboarding-fields input:focus,
+.opportunity-count-field input:focus {
+  border-color: #80a895;
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(23 107 77 / 8%);
+}
+
+.onboarding-fieldset {
+  margin: 27px 0 0;
+  border: 0;
+  padding: 0;
+}
+
+.onboarding-fieldset legend {
+  margin-bottom: 9px;
+}
+
+.stage-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stage-options label {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 68px;
+  grid-template-columns: minmax(0, 1fr) 15px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.stage-options label:hover {
+  border-color: #9bb2a7;
+}
+
+.stage-options label.selected {
+  border-color: var(--green);
+  background: #f1f7f4;
+}
+
+.stage-options input {
+  position: absolute;
+  opacity: 0;
+}
+
+.stage-options label > span {
+  min-width: 0;
+}
+
+.stage-options strong,
+.stage-options small {
+  display: block;
+}
+
+.stage-options strong {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.stage-options small {
+  margin-top: 4px;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.stage-options svg {
+  visibility: hidden;
+  color: var(--green);
+}
+
+.stage-options label.selected svg {
+  visibility: visible;
+}
+
+.opportunity-count-field {
+  position: relative;
+  width: min(220px, 100%);
+  margin-top: 24px;
+}
+
+.opportunity-count-field input {
+  padding-right: 36px;
+}
+
+.opportunity-count-field > small {
+  position: absolute;
+  right: 12px;
+  bottom: 13px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.onboarding-error {
+  min-height: 18px;
+  margin: 14px 0 4px;
+  color: var(--red);
+  font-size: 10px;
+}
+
+.onboarding-submit {
+  min-height: 42px;
+  padding: 0 17px;
+}
+
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -1113,6 +1427,43 @@ select:focus-visible {
   font-size: 11px;
 }
 
+.first-opportunity-page {
+  max-width: 1050px;
+}
+
+.first-opportunity-action {
+  display: grid;
+  min-height: 170px;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 30px 4px;
+}
+
+.first-opportunity-action > span {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.first-opportunity-action h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.first-opportunity-action p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
 .opportunity-toolbar {
   display: flex;
   align-items: center;
@@ -1471,6 +1822,21 @@ select:focus-visible {
   padding: 4px 12px;
 }
 
+.memory-items > div.memory-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  min-height: 72px;
+  grid-template-columns: 28px 1fr;
+  align-content: center;
+  border-color: var(--line-strong);
+  color: var(--faint);
+}
+
+.memory-empty svg {
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
 .memory-items > div:nth-child(1) {
   border-color: var(--green);
 }
@@ -1691,6 +2057,22 @@ select:focus-visible {
 }
 
 @media (max-width: 820px) {
+  .onboarding-shell {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  .onboarding-context {
+    padding: 28px 22px;
+  }
+
+  .onboarding-main {
+    padding: 36px 28px;
+  }
+
+  .stage-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .sidebar {
     width: 224px;
     transform: translateX(-100%);
@@ -1816,6 +2198,104 @@ select:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .onboarding-shell {
+    display: block;
+  }
+
+  .onboarding-context {
+    min-height: 0;
+    padding: 18px 16px;
+  }
+
+  .onboarding-brand {
+    min-height: 36px;
+  }
+
+  .onboarding-brand .brand-mark {
+    width: 32px;
+    height: 32px;
+    flex-basis: 32px;
+  }
+
+  .onboarding-progress {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 22px;
+  }
+
+  .onboarding-progress > div {
+    min-height: 24px;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 7px;
+  }
+
+  .onboarding-progress > div:not(:last-child)::after {
+    display: none;
+  }
+
+  .onboarding-progress > div > span:first-child,
+  .onboarding-progress > div > svg {
+    width: 24px;
+    height: 24px;
+    padding: 5px;
+  }
+
+  .onboarding-progress > div > strong,
+  .onboarding-progress > div > span:last-child {
+    font-size: 9px;
+    line-height: 1.35;
+  }
+
+  .onboarding-account {
+    display: none;
+  }
+
+  .onboarding-main {
+    display: block;
+    padding: 27px 16px max(28px, env(safe-area-inset-bottom));
+  }
+
+  .onboarding-form header {
+    margin-bottom: 24px;
+  }
+
+  .onboarding-icon {
+    display: none;
+  }
+
+  .onboarding-form h1 {
+    font-size: 24px;
+  }
+
+  .onboarding-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .stage-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .onboarding-submit {
+    width: 100%;
+  }
+
+  .first-opportunity-action {
+    grid-template-columns: 40px minmax(0, 1fr);
+    align-items: start;
+    gap: 14px;
+  }
+
+  .first-opportunity-action > span {
+    width: 40px;
+    height: 40px;
+  }
+
+  .first-opportunity-action .primary-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .auth-shell {
     display: block;
     padding: 0;

@@ -1,10 +1,12 @@
 import type { FollowUpTask, Opportunity } from "@/data/demo";
 import type { CandidateSettings } from "@/domain/settings";
+import type { OnboardingInput, OnboardingProfile } from "@/domain/onboarding";
 
 export interface WorkspaceSnapshot {
   followUps: FollowUpTask[];
   opportunities: Opportunity[];
   settings: CandidateSettings;
+  onboarding: OnboardingProfile;
   storage: "server";
 }
 
@@ -73,6 +75,16 @@ export function saveCandidateSettings(settings: CandidateSettings) {
   return requestJson<{ settings: CandidateSettings }>("/api/settings", {
     method: "PATCH",
     body: JSON.stringify(settings),
+  });
+}
+
+export function completeOnboarding(input: OnboardingInput) {
+  return requestJson<{
+    onboarding: OnboardingProfile;
+    settings: CandidateSettings;
+  }>("/api/onboarding", {
+    method: "PATCH",
+    body: JSON.stringify(input),
   });
 }
 
