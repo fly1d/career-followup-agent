@@ -3,6 +3,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createFollowUpRepository,
@@ -38,6 +39,21 @@ describe("FollowUpRepository", () => {
     expect(() => repository.getWorkspace("another-workspace")).toThrow(
       RepositoryNotFoundError,
     );
+  });
+
+  it("applies versioned migrations idempotently", () => {
+    repository.close();
+    repository = createFollowUpRepository(join(directory, "test.db"));
+    repository.close();
+
+    const database = new DatabaseSync(join(directory, "test.db"));
+    const migrations = database
+      .prepare("SELECT version FROM schema_migrations ORDER BY version")
+      .all();
+    database.close();
+    repository = createFollowUpRepository(join(directory, "test.db"));
+
+    expect(migrations).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
   });
 
   it("creates an opportunity and its first scheduled follow-up atomically", () => {
@@ -203,5 +219,56 @@ describe("FollowUpRepository", () => {
 
     repository.deleteSession("token-hash");
     expect(repository.getSession("token-hash", createdAt)).toBeNull();
+  });
+
+  it("atomically limits attempts and resets expired or cleared buckets", () => {
+    const policy = { limit: 2, windowMs: 60_000 };
+    const startedAt = new Date("2026-08-11T08:00:00.000Z");
+
+    expect(repository.consumeRateLimit("login-key", policy, startedAt).allowed).toBe(
+      true,
+    );
+    expect(
+      repository.consumeRateLimit(
+        "login-key",
+        policy,
+        new Date("2026-08-11T08:00:10.000Z"),
+      ).allowed,
+    ).toBe(true);
+    expect(
+      repository.consumeRateLimit(
+        "login-key",
+        policy,
+        new Date("2026-08-11T08:00:20.000Z"),
+      ),
+    ).toMatchObject({ allowed: false, attemptCount: 3, retryAfterSeconds: 40 });
+    expect(
+      repository.consumeRateLimit(
+        "login-key",
+        policy,
+        new Date("2026-08-11T08:01:00.000Z"),
+      ).allowed,
+    ).toBe(true);
+
+    const current = repository.consumeRateLimit("clear-key", policy, startedAt);
+    repository.clearRateLimit("clear-key", current.revision);
+    expect(repository.consumeRateLimit("clear-key", policy, startedAt).allowed).toBe(
+      true,
+    );
+
+    const stale = repository.consumeRateLimit("stale-key", policy, startedAt);
+    repository.consumeRateLimit(
+      "stale-key",
+      policy,
+      new Date("2026-08-11T08:00:01.000Z"),
+    );
+    repository.clearRateLimit("stale-key", stale.revision);
+    expect(
+      repository.consumeRateLimit(
+        "stale-key",
+        policy,
+        new Date("2026-08-11T08:00:02.000Z"),
+      ).allowed,
+    ).toBe(false);
   });
 });

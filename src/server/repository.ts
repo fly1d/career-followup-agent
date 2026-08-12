@@ -17,6 +17,10 @@ import {
   prepareFollowUpUpdate,
   prepareNewOpportunity,
 } from "./store-records";
+import {
+  createRateLimitDecision,
+  type RateLimitPolicy,
+} from "./rate-limit";
 
 export const DEMO_WORKSPACE_ID = "demo-workspace";
 
@@ -188,6 +192,19 @@ const authenticationSchema = `
     ON sessions(user_id, expires_at);
 `;
 
+const authRateLimitSchema = `
+  CREATE TABLE auth_rate_limits (
+    rate_key TEXT PRIMARY KEY,
+    attempt_count INTEGER NOT NULL CHECK(attempt_count >= 1),
+    expires_at TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX auth_rate_limits_expires_idx
+    ON auth_rate_limits(expires_at);
+`;
+
 function mapOpportunity(row: DatabaseRow): Opportunity {
   return {
     id: String(row.id),
@@ -258,6 +275,7 @@ export class FollowUpRepository {
     `);
     this.applyMigration(1, initialSchema);
     this.applyMigration(2, authenticationSchema);
+    this.applyMigration(3, authRateLimitSchema);
   }
 
   private applyMigration(version: number, statements: string) {
@@ -429,6 +447,59 @@ export class FollowUpRepository {
 
   deleteSession(tokenHash: string) {
     this.database.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
+  }
+
+  consumeRateLimit(key: string, policy: RateLimitPolicy, now = new Date()) {
+    const timestamp = now.toISOString();
+    const nextExpiry = new Date(now.getTime() + policy.windowMs).toISOString();
+    const revision = randomUUID();
+    this.database
+      .prepare(
+        `DELETE FROM auth_rate_limits
+         WHERE rate_key IN (
+           SELECT rate_key FROM auth_rate_limits
+           WHERE expires_at <= ?
+           ORDER BY expires_at
+           LIMIT 100
+         )`,
+      )
+      .run(timestamp);
+    const row = this.database
+      .prepare(
+        `INSERT INTO auth_rate_limits(
+          rate_key, attempt_count, expires_at, revision, updated_at
+        ) VALUES(?, 1, ?, ?, ?)
+        ON CONFLICT(rate_key) DO UPDATE SET
+          attempt_count = CASE
+            WHEN auth_rate_limits.expires_at <= excluded.updated_at THEN 1
+            ELSE auth_rate_limits.attempt_count + 1
+          END,
+          expires_at = CASE
+            WHEN auth_rate_limits.expires_at <= excluded.updated_at
+              THEN excluded.expires_at
+            ELSE auth_rate_limits.expires_at
+          END,
+          revision = excluded.revision,
+          updated_at = excluded.updated_at
+        RETURNING attempt_count, expires_at, revision`,
+      )
+      .get(key, nextExpiry, revision, timestamp) as DatabaseRow;
+    return createRateLimitDecision(
+      Number(row.attempt_count),
+      new Date(String(row.expires_at)),
+      policy.limit,
+      now,
+      String(row.revision),
+    );
+  }
+
+  clearRateLimit(key: string, expectedRevision: string) {
+    this.database
+      .prepare(
+        `DELETE FROM auth_rate_limits
+         WHERE rate_key = ? AND revision = ?`,
+      )
+      .run(key, expectedRevision);
   }
 
   checkHealth() {

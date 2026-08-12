@@ -5,6 +5,7 @@ import {
   AuthenticationError,
   DuplicateAccountError,
   InvalidCredentialsError,
+  RateLimitExceededError,
 } from "./errors";
 import { consumeLoginTiming, hashPassword, verifyPassword } from "./password";
 import {
@@ -12,12 +13,68 @@ import {
   type AccountIdentity,
   type AuthenticatedSession,
 } from "./repository";
+import {
+  authRateLimitPolicies,
+  createRateLimitKey,
+  type RateLimitPolicy,
+} from "./rate-limit";
 
 export const SESSION_COOKIE_NAME = "career_session";
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
+interface AuthAttemptContext {
+  clientAddress?: string;
+  now?: Date;
+}
+
 export function hashSessionToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function emailRateLimitKey(action: "login" | "registration", email: string) {
+  return createRateLimitKey(`${action}:email`, email.trim().toLowerCase());
+}
+
+async function consumeAuthRateLimit(
+  key: string,
+  policy: RateLimitPolicy,
+  now: Date,
+) {
+  const repository = await getRepository();
+  const decision = await repository.consumeRateLimit(key, policy, now);
+  if (!decision.allowed) {
+    throw new RateLimitExceededError(decision.retryAfterSeconds);
+  }
+  return decision;
+}
+
+async function enforceAuthRateLimits(
+  action: "login" | "registration",
+  email: string,
+  context: AuthAttemptContext,
+) {
+  if (process.env.AUTH_RATE_LIMIT_ENABLED === "false") return;
+
+  const now = context.now ?? new Date();
+  const emailPolicy =
+    action === "login"
+      ? authRateLimitPolicies.loginEmail
+      : authRateLimitPolicies.registrationEmail;
+  const emailKey = emailRateLimitKey(action, email);
+  const emailDecision = await consumeAuthRateLimit(emailKey, emailPolicy, now);
+
+  if (context.clientAddress) {
+    const clientPolicy =
+      action === "login"
+        ? authRateLimitPolicies.loginClient
+        : authRateLimitPolicies.registrationClient;
+    await consumeAuthRateLimit(
+      createRateLimitKey(`${action}:client`, context.clientAddress),
+      clientPolicy,
+      now,
+    );
+  }
+  return { emailKey, emailDecision };
 }
 
 async function issueSession(identity: AccountIdentity, now = new Date()) {
@@ -28,11 +85,15 @@ async function issueSession(identity: AccountIdentity, now = new Date()) {
   return { token, expiresAt };
 }
 
-export async function registerAccount(input: {
-  email: string;
-  displayName: string;
-  password: string;
-}) {
+export async function registerAccount(
+  input: {
+    email: string;
+    displayName: string;
+    password: string;
+  },
+  context: AuthAttemptContext = {},
+) {
+  await enforceAuthRateLimits("registration", input.email, context);
   const passwordHash = await hashPassword(input.password);
   const repository = await getRepository();
   let identity: AccountIdentity;
@@ -52,7 +113,11 @@ export async function registerAccount(input: {
   return { identity, ...(await issueSession(identity)) };
 }
 
-export async function loginAccount(input: { email: string; password: string }) {
+export async function loginAccount(
+  input: { email: string; password: string },
+  context: AuthAttemptContext = {},
+) {
+  const rateLimit = await enforceAuthRateLimits("login", input.email, context);
   const repository = await getRepository();
   const record = await repository.findUserByEmail(input.email);
   if (!record) {
@@ -67,6 +132,12 @@ export async function loginAccount(input: { email: string; password: string }) {
     user: record.user,
     workspaceId: record.workspaceId,
   };
+  if (rateLimit) {
+    await repository.clearRateLimit(
+      rateLimit.emailKey,
+      rateLimit.emailDecision.revision,
+    );
+  }
   return { identity, ...(await issueSession(identity)) };
 }
 

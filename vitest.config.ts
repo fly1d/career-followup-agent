@@ -23,6 +23,7 @@ export default defineConfig({
         "src/server/store.ts",
         "src/server/http.ts",
         "src/server/password.ts",
+        "src/server/rate-limit.ts",
         "src/server/schemas.ts",
       ],
       thresholds: {

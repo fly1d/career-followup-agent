@@ -6,6 +6,7 @@ import {
   AuthenticationError,
   DuplicateAccountError,
   InvalidCredentialsError,
+  RateLimitExceededError,
 } from "./errors";
 import { errorResponse, parseRequest } from "./http";
 import {
@@ -93,6 +94,16 @@ describe("errorResponse", () => {
     expect(credentials.status).toBe(401);
     expect(duplicate.status).toBe(409);
     expect(JSON.stringify(await credentials.json())).not.toContain("known email");
+  });
+
+  it("returns a standard retry delay for rate limits", async () => {
+    const response = errorResponse(new RateLimitExceededError(321));
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("321");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "rate_limited" },
+    });
   });
 });
 

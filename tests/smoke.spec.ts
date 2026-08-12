@@ -64,6 +64,29 @@ test("registers through the UI and receives a protected session cookie", async (
   await expect(page.getByRole("heading", { name: "今日待跟进" })).toBeVisible();
 });
 
+test("rate limits repeated invalid logins", async ({ page }, testInfo) => {
+  const account = await register(page, testInfo, "-rate-limit");
+  const attempts = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      page.request.post("/api/auth/login", {
+        data: { email: account.email, password: "wrong-pass-2026" },
+      }),
+    ),
+  );
+  expect(attempts.map((response) => response.status())).toEqual([
+    401, 401, 401, 401, 401,
+  ]);
+
+  const blocked = await page.request.post("/api/auth/login", {
+    data: { email: account.email, password: "wrong-pass-2026" },
+  });
+  expect(blocked.status()).toBe(429);
+  expect(Number(blocked.headers()["retry-after"])).toBeGreaterThan(0);
+  await expect(blocked.json()).resolves.toMatchObject({
+    error: { code: "rate_limited" },
+  });
+});
+
 test("logs out, logs back in, and keeps the account session across reloads", async ({
   page,
 }, testInfo) => {

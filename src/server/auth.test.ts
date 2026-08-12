@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   cookieStore: {
@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
     createSession: vi.fn(),
     getSession: vi.fn(),
     deleteSession: vi.fn(),
+    consumeRateLimit: vi.fn(),
+    clearRateLimit: vi.fn(),
   },
 }));
 
@@ -39,6 +41,7 @@ import {
   AuthenticationError,
   DuplicateAccountError,
   InvalidCredentialsError,
+  RateLimitExceededError,
 } from "./errors";
 import { hashPassword } from "./password";
 import { RepositoryConflictError } from "./repository";
@@ -51,6 +54,19 @@ const identity = {
 describe("authentication service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.repository.consumeRateLimit.mockResolvedValue({
+      allowed: true,
+      attemptCount: 1,
+      revision: "revision-1",
+      retryAfterSeconds: 0,
+    });
+    mocks.repository.createSession.mockResolvedValue(undefined);
+    mocks.repository.clearRateLimit.mockResolvedValue(undefined);
+    mocks.repository.deleteSession.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("registers with a password hash and stores only a session token hash", async () => {
@@ -108,10 +124,53 @@ describe("authentication service", () => {
     });
     expect(result.identity).toEqual(identity);
     expect(mocks.repository.createSession).toHaveBeenCalledOnce();
+    expect(mocks.repository.clearRateLimit).toHaveBeenCalledWith(
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      "revision-1",
+    );
 
     await expect(
       loginAccount({ email: identity.user.email, password: "wrong-pass-2026" }),
     ).rejects.toBeInstanceOf(InvalidCredentialsError);
+  });
+
+  it("blocks excessive attempts before account lookup or password hashing", async () => {
+    mocks.repository.consumeRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      attemptCount: 6,
+      revision: "revision-6",
+      retryAfterSeconds: 321,
+    });
+
+    const error = await loginAccount(
+      { email: identity.user.email, password: "wrong-pass-2026" },
+      { clientAddress: "203.0.113.8" },
+    ).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(RateLimitExceededError);
+    expect(error).toMatchObject({ retryAfterSeconds: 321 });
+    expect(mocks.repository.findUserByEmail).not.toHaveBeenCalled();
+    expect(mocks.repository.createAccount).not.toHaveBeenCalled();
+  });
+
+  it("supports an emergency rate-limit rollback flag", async () => {
+    vi.stubEnv("AUTH_RATE_LIMIT_ENABLED", "false");
+    mocks.repository.findUserByEmail.mockReturnValue(null);
+
+    await expect(
+      loginAccount({ email: identity.user.email, password: "wrong-pass-2026" }),
+    ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    expect(mocks.repository.consumeRateLimit).not.toHaveBeenCalled();
+  });
+
+  it("does not create a session if the successful-login bucket cannot be cleared", async () => {
+    const passwordHash = await hashPassword("secure-pass-2026");
+    mocks.repository.findUserByEmail.mockReturnValue({ ...identity, passwordHash });
+    mocks.repository.clearRateLimit.mockRejectedValue(new Error("clear failed"));
+
+    await expect(
+      loginAccount({ email: identity.user.email, password: "secure-pass-2026" }),
+    ).rejects.toThrow("clear failed");
+    expect(mocks.repository.createSession).not.toHaveBeenCalled();
   });
 
   it("sets secure cookie attributes and resolves the database session", async () => {

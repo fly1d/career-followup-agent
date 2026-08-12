@@ -3,6 +3,7 @@ import {
   AuthenticationError,
   DuplicateAccountError,
   InvalidCredentialsError,
+  RateLimitExceededError,
 } from "./errors";
 import {
   RepositoryConflictError,
@@ -56,6 +57,15 @@ export function errorResponse(error: unknown) {
     return Response.json(
       { error: { code: "account_exists", message: "这个邮箱已经注册，请直接登录。" } },
       { status: 409 },
+    );
+  }
+  if (error instanceof RateLimitExceededError) {
+    return Response.json(
+      { error: { code: "rate_limited", message: "尝试次数过多，请稍后再试。" } },
+      {
+        status: 429,
+        headers: { "Retry-After": String(error.retryAfterSeconds) },
+      },
     );
   }
   if (error instanceof RepositoryNotFoundError) {

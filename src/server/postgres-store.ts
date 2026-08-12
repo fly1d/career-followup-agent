@@ -22,6 +22,10 @@ import {
   prepareNewOpportunity,
 } from "./store-records";
 import type { FollowUpStore } from "./store";
+import {
+  createRateLimitDecision,
+  type RateLimitPolicy,
+} from "./rate-limit";
 
 type DatabaseRow = Record<string, unknown>;
 
@@ -168,6 +172,19 @@ const postgresSchema = `
     ON audit_events(workspace_id, created_at);
 `;
 
+const postgresAuthRateLimitSchema = `
+  CREATE TABLE auth_rate_limits (
+    rate_key TEXT PRIMARY KEY,
+    attempt_count INTEGER NOT NULL CHECK(attempt_count >= 1),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revision TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  );
+
+  CREATE INDEX auth_rate_limits_expires_idx
+    ON auth_rate_limits(expires_at);
+`;
+
 function toIsoString(value: unknown) {
   return value instanceof Date
     ? value.toISOString()
@@ -284,16 +301,21 @@ export class PostgresFollowUpStore implements FollowUpStore {
           applied_at TIMESTAMPTZ NOT NULL
         )
       `);
-      const applied = await client.query(
-        "SELECT version FROM schema_migrations WHERE version = 1",
-      );
-      if (applied.rows.length > 0) return;
-      await client.query(postgresSchema);
-      await client.query(
-        `INSERT INTO schema_migrations(version, applied_at) VALUES(1, $1)
-         ON CONFLICT(version) DO NOTHING`,
-        [new Date().toISOString()],
-      );
+      const applied = await client.query("SELECT version FROM schema_migrations");
+      const appliedVersions = new Set(applied.rows.map((row) => Number(row.version)));
+      const migrations = [
+        [1, postgresSchema],
+        [2, postgresAuthRateLimitSchema],
+      ] as const;
+      for (const [version, statements] of migrations) {
+        if (appliedVersions.has(version)) continue;
+        await client.query(statements);
+        await client.query(
+          `INSERT INTO schema_migrations(version, applied_at) VALUES($1, $2)
+           ON CONFLICT(version) DO NOTHING`,
+          [version, new Date().toISOString()],
+        );
+      }
     });
   }
 
@@ -418,6 +440,62 @@ export class PostgresFollowUpStore implements FollowUpStore {
 
   async deleteSession(tokenHash: string) {
     await this.provider.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
+  }
+
+  async consumeRateLimit(key: string, policy: RateLimitPolicy, now = new Date()) {
+    const timestamp = now.toISOString();
+    const nextExpiry = new Date(now.getTime() + policy.windowMs).toISOString();
+    const revision = randomUUID();
+    return this.transaction(async (client) => {
+      await client.query(
+        `WITH expired AS (
+          SELECT rate_key FROM auth_rate_limits
+          WHERE expires_at <= $1
+          ORDER BY expires_at
+          LIMIT 100
+          FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM auth_rate_limits
+        USING expired
+        WHERE auth_rate_limits.rate_key = expired.rate_key`,
+        [timestamp],
+      );
+      const result = await client.query(
+        `INSERT INTO auth_rate_limits(
+          rate_key, attempt_count, expires_at, revision, updated_at
+        ) VALUES($1, 1, $2, $3, $4)
+        ON CONFLICT(rate_key) DO UPDATE SET
+          attempt_count = CASE
+            WHEN auth_rate_limits.expires_at <= EXCLUDED.updated_at THEN 1
+            ELSE auth_rate_limits.attempt_count + 1
+          END,
+          expires_at = CASE
+            WHEN auth_rate_limits.expires_at <= EXCLUDED.updated_at
+              THEN EXCLUDED.expires_at
+            ELSE auth_rate_limits.expires_at
+          END,
+          revision = EXCLUDED.revision,
+          updated_at = EXCLUDED.updated_at
+        RETURNING attempt_count, expires_at, revision`,
+        [key, nextExpiry, revision, timestamp],
+      );
+      const row = result.rows[0];
+      return createRateLimitDecision(
+        Number(row.attempt_count),
+        new Date(toIsoString(row.expires_at)),
+        policy.limit,
+        now,
+        String(row.revision),
+      );
+    });
+  }
+
+  async clearRateLimit(key: string, expectedRevision: string) {
+    await this.provider.query(
+      `DELETE FROM auth_rate_limits
+       WHERE rate_key = $1 AND revision = $2`,
+      [key, expectedRevision],
+    );
   }
 
   async getWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {

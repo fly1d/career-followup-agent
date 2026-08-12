@@ -50,7 +50,7 @@ describe("PostgresFollowUpStore", () => {
       "SELECT version FROM schema_migrations ORDER BY version",
     );
 
-    expect(migrations.rows).toEqual([{ version: 1 }]);
+    expect(migrations.rows).toEqual([{ version: 1 }, { version: 2 }]);
     await expect(repository.checkHealth()).resolves.toBeUndefined();
   });
 
@@ -154,6 +154,59 @@ describe("PostgresFollowUpStore", () => {
 
     await repository.deleteSession("token-hash");
     await expect(repository.getSession("token-hash", createdAt)).resolves.toBeNull();
+  });
+
+  it("atomically limits attempts and resets expired or cleared buckets", async () => {
+    const policy = { limit: 2, windowMs: 60_000 };
+    const startedAt = new Date("2026-08-11T08:00:00.000Z");
+
+    await expect(
+      repository.consumeRateLimit("login-key", policy, startedAt),
+    ).resolves.toMatchObject({ allowed: true, attemptCount: 1, retryAfterSeconds: 0 });
+    await repository.consumeRateLimit(
+      "login-key",
+      policy,
+      new Date("2026-08-11T08:00:10.000Z"),
+    );
+    await expect(
+      repository.consumeRateLimit(
+        "login-key",
+        policy,
+        new Date("2026-08-11T08:00:20.000Z"),
+      ),
+    ).resolves.toMatchObject({
+      allowed: false,
+      attemptCount: 3,
+      retryAfterSeconds: 40,
+    });
+    await expect(
+      repository.consumeRateLimit(
+        "login-key",
+        policy,
+        new Date("2026-08-11T08:01:00.000Z"),
+      ),
+    ).resolves.toMatchObject({ allowed: true, attemptCount: 1, retryAfterSeconds: 0 });
+
+    const current = await repository.consumeRateLimit("clear-key", policy, startedAt);
+    await repository.clearRateLimit("clear-key", current.revision);
+    await expect(
+      repository.consumeRateLimit("clear-key", policy, startedAt),
+    ).resolves.toMatchObject({ allowed: true, attemptCount: 1, retryAfterSeconds: 0 });
+
+    const stale = await repository.consumeRateLimit("stale-key", policy, startedAt);
+    await repository.consumeRateLimit(
+      "stale-key",
+      policy,
+      new Date("2026-08-11T08:00:01.000Z"),
+    );
+    await repository.clearRateLimit("stale-key", stale.revision);
+    await expect(
+      repository.consumeRateLimit(
+        "stale-key",
+        policy,
+        new Date("2026-08-11T08:00:02.000Z"),
+      ),
+    ).resolves.toMatchObject({ allowed: false, attemptCount: 3 });
   });
 
   it("keeps mutations scoped and records sent follow-ups idempotently", async () => {

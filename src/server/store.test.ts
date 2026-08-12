@@ -38,6 +38,18 @@ describe("SqliteFollowUpStore", () => {
     await expect(repository.getSession("token-hash", createdAt)).resolves.toMatchObject(
       identity,
     );
+    await expect(
+      repository.consumeRateLimit("store-key", { limit: 1, windowMs: 60_000 }, createdAt),
+    ).resolves.toMatchObject({ allowed: true, attemptCount: 1, retryAfterSeconds: 0 });
+    await expect(
+      repository.consumeRateLimit("store-key", { limit: 1, windowMs: 60_000 }, createdAt),
+    ).resolves.toMatchObject({ allowed: false });
+    const clearDecision = await repository.consumeRateLimit(
+      "clear-store-key",
+      { limit: 1, windowMs: 60_000 },
+      createdAt,
+    );
+    await repository.clearRateLimit("clear-store-key", clearDecision.revision);
 
     const created = await repository.createOpportunity(
       identity.workspaceId,

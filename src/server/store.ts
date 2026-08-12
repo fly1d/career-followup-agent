@@ -9,6 +9,7 @@ import {
   type WorkspaceSnapshot,
 } from "./repository";
 import type { CandidateSettings } from "@/domain/settings";
+import type { RateLimitDecision, RateLimitPolicy } from "./rate-limit";
 
 export interface FollowUpStore {
   readonly backend: "sqlite" | "postgres";
@@ -29,6 +30,12 @@ export interface FollowUpStore {
     now?: Date,
   ): Promise<AuthenticatedSession | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  consumeRateLimit(
+    key: string,
+    policy: RateLimitPolicy,
+    now?: Date,
+  ): Promise<RateLimitDecision>;
+  clearRateLimit(key: string, expectedRevision: string): Promise<void>;
   getWorkspace(workspaceId: string): Promise<WorkspaceSnapshot>;
   createOpportunity(
     workspaceId: string,
@@ -83,6 +90,14 @@ class SqliteFollowUpStore implements FollowUpStore {
 
   async deleteSession(tokenHash: string) {
     this.repository.deleteSession(tokenHash);
+  }
+
+  async consumeRateLimit(key: string, policy: RateLimitPolicy, now?: Date) {
+    return this.repository.consumeRateLimit(key, policy, now);
+  }
+
+  async clearRateLimit(key: string, expectedRevision: string) {
+    this.repository.clearRateLimit(key, expectedRevision);
   }
 
   async getWorkspace(workspaceId: string) {
