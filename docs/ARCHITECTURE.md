@@ -21,7 +21,7 @@ flowchart LR
   A --> S["Object Storage"]
 ```
 
-当前 M1C 在统一异步仓储契约下支持两种实现：未配置 `DATABASE_URL` 时使用 Node.js SQLite，数据库文件默认位于 `.data/followup.db`；配置后使用 PostgreSQL 连接池。账号、成员关系和会话均已持久化，每个账号创建独立工作区。
+当前 M1D 在统一异步仓储契约下支持两种实现：未配置 `DATABASE_URL` 时使用 Node.js SQLite，数据库文件默认位于 `.data/followup.db`；配置后使用 PostgreSQL 连接池。账号、成员关系、入门资料和会话均已持久化，每个账号创建独立的空工作区。
 
 ## 3. 代码边界
 
@@ -43,6 +43,7 @@ flowchart LR
 - `POST /api/opportunities`：创建机会及首次追问计划。
 - `PATCH /api/follow-ups/:id`：记录发送、延后或跳过。
 - `PATCH /api/settings`：保存求职目标和追问规则。
+- `PATCH /api/onboarding`：完成当前账号的求职目标入门设置。
 
 除健康检查和认证入口外，业务接口都必须先验证数据库会话，再从成员关系解析工作区。客户端不能指定或切换工作区 ID。
 
@@ -66,6 +67,8 @@ flowchart LR
 - 迁移使用事务级 advisory lock，支持多个应用实例同时启动。
 - SQLite 与 PostgreSQL 使用相同固定窗口规则和原子 upsert，服务重启或多实例部署不会重置计数。
 - 共享纯函数生成示例记录、首次追问和状态变化，避免两个数据库实现出现业务规则分叉。
+- 新账户只写入默认规则和未完成的入门资料；演示记录只保留在显式测试工作区。
+- 激活事件使用工作区与事件类型的部分唯一索引，重复提交不会重复计算转化。
 
 ## 4. 核心数据实体
 
@@ -88,6 +91,22 @@ flowchart LR
 ### AuditEvent
 
 记录创建、编辑、确认、发送、取消和记忆变更。审计记录只追加，不覆盖。
+
+### WorkspaceOnboarding
+
+保存目标岗位、目标城市、求职阶段、现有机会数和首次完成时间。再次修改只更新资料，不覆盖首次完成时间。
+
+## 4.1 激活漏斗
+
+| 事件 | 触发点 |
+| --- | --- |
+| `activation.account_registered` | 注册事务创建工作区 |
+| `activation.onboarding_completed` | 首次保存入门资料 |
+| `activation.first_opportunity_added` | 创建账号内第一个机会 |
+| `activation.first_follow_up_generated` | 为第一个机会生成追问 |
+| `activation.first_follow_up_confirmed` | 首次确认并记录追问 |
+
+事件不存消息正文、邮箱或其他不必要的个人信息。后续留存与付费事件沿用相同命名和幂等原则。
 
 ## 5. 可靠发送
 

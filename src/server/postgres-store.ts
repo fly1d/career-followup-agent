@@ -3,6 +3,12 @@ import { Pool, type PoolClient } from "pg";
 import type { FollowUpTask, Opportunity } from "@/data/demo";
 import type { OpportunityStage } from "@/domain/follow-up";
 import {
+  emptyOnboardingProfile,
+  type OnboardingInput,
+  type OnboardingProfile,
+  type SearchStage,
+} from "@/domain/onboarding";
+import {
   defaultCandidateSettings,
   type CandidateSettings,
 } from "@/domain/settings";
@@ -17,7 +23,6 @@ import {
   type WorkspaceSnapshot,
 } from "./repository";
 import {
-  createWorkspaceSeed,
   prepareFollowUpUpdate,
   prepareNewOpportunity,
 } from "./store-records";
@@ -185,6 +190,105 @@ const postgresAuthRateLimitSchema = `
     ON auth_rate_limits(expires_at);
 `;
 
+const postgresOnboardingSchema = `
+  CREATE TABLE workspace_onboarding (
+    workspace_id TEXT PRIMARY KEY,
+    target_role TEXT NOT NULL,
+    target_city TEXT NOT NULL,
+    search_stage TEXT NOT NULL,
+    current_opportunity_count INTEGER NOT NULL CHECK(current_opportunity_count >= 0),
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+
+  CREATE UNIQUE INDEX activation_events_workspace_type_idx
+    ON audit_events(workspace_id, event_type)
+    WHERE event_type IN (
+      'activation.account_registered',
+      'activation.onboarding_completed',
+      'activation.first_opportunity_added',
+      'activation.first_follow_up_generated',
+      'activation.first_follow_up_confirmed'
+    );
+
+  INSERT INTO workspace_onboarding(
+    workspace_id, target_role, target_city, search_stage,
+    current_opportunity_count, completed_at, updated_at
+  )
+  SELECT workspaces.id, '', '', 'actively_applying', 0, NULL, workspaces.created_at
+  FROM workspaces
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  )
+  ON CONFLICT(workspace_id) DO NOTHING;
+
+  INSERT INTO audit_events(
+    workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+  )
+  SELECT
+    workspaces.id, 'activation.account_registered', 'workspace',
+    workspaces.id, '{}'::jsonb, workspaces.created_at
+  FROM workspaces
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  )
+  ON CONFLICT DO NOTHING;
+
+  DELETE FROM opportunities
+  WHERE workspace_id IN (
+    SELECT workspace_id FROM audit_events WHERE event_type = 'workspace.seeded'
+  )
+  AND EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = opportunities.workspace_id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.workspace_id = opportunities.workspace_id
+      AND audit_events.event_type = 'opportunity.created'
+      AND audit_events.entity_id = opportunities.id
+  );
+
+  INSERT INTO audit_events(
+    workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+  )
+  SELECT
+    workspaces.id, 'activation.first_opportunity_added', 'opportunity',
+    first_opportunity.id, '{}'::jsonb, workspaces.created_at
+  FROM workspaces
+  CROSS JOIN LATERAL (
+    SELECT opportunities.id FROM opportunities
+    WHERE opportunities.workspace_id = workspaces.id
+    ORDER BY opportunities.created_at, opportunities.id LIMIT 1
+  ) AS first_opportunity
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  )
+  ON CONFLICT DO NOTHING;
+
+  INSERT INTO audit_events(
+    workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+  )
+  SELECT
+    workspaces.id, 'activation.first_follow_up_generated', 'follow_up',
+    first_follow_up.id, '{}'::jsonb, workspaces.created_at
+  FROM workspaces
+  CROSS JOIN LATERAL (
+    SELECT follow_up_tasks.id FROM follow_up_tasks
+    WHERE follow_up_tasks.workspace_id = workspaces.id
+    ORDER BY follow_up_tasks.created_at, follow_up_tasks.id LIMIT 1
+  ) AS first_follow_up
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  )
+  ON CONFLICT DO NOTHING;
+`;
+
 function toIsoString(value: unknown) {
   return value instanceof Date
     ? value.toISOString()
@@ -242,6 +346,17 @@ function mapSettings(row: DatabaseRow): CandidateSettings {
     maxFollowUps: Number(row.max_follow_ups),
     deliveryStart: String(row.delivery_start),
     deliveryEnd: String(row.delivery_end),
+  };
+}
+
+function mapOnboarding(row?: DatabaseRow): OnboardingProfile {
+  if (!row) return emptyOnboardingProfile;
+  return {
+    targetRole: String(row.target_role),
+    targetCity: String(row.target_city),
+    searchStage: String(row.search_stage) as SearchStage,
+    currentOpportunityCount: Number(row.current_opportunity_count),
+    completedAt: row.completed_at ? toIsoString(row.completed_at) : null,
   };
 }
 
@@ -306,6 +421,7 @@ export class PostgresFollowUpStore implements FollowUpStore {
       const migrations = [
         [1, postgresSchema],
         [2, postgresAuthRateLimitSchema],
+        [3, postgresOnboardingSchema],
       ] as const;
       for (const [version, statements] of migrations) {
         if (appliedVersions.has(version)) continue;
@@ -349,7 +465,7 @@ export class PostgresFollowUpStore implements FollowUpStore {
            VALUES($1, $2, 'owner', $3)`,
           [workspaceId, userId, timestamp],
         );
-        await this.seedWorkspaceData(client, workspaceId, now);
+        await this.initializeAccountWorkspace(client, workspaceId, timestamp);
       });
     } catch (error) {
       if (isDuplicateEmail(error)) {
@@ -501,7 +617,8 @@ export class PostgresFollowUpStore implements FollowUpStore {
   async getWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
     return this.transaction(
       async (client) => {
-        const [workspace, opportunities, followUps, settings] = await Promise.all([
+        const [workspace, opportunities, followUps, settings, onboarding] =
+          await Promise.all([
           client.query("SELECT id FROM workspaces WHERE id = $1", [workspaceId]),
           client.query(
             `SELECT * FROM opportunities
@@ -517,6 +634,10 @@ export class PostgresFollowUpStore implements FollowUpStore {
             "SELECT * FROM candidate_settings WHERE workspace_id = $1",
             [workspaceId],
           ),
+          client.query(
+            "SELECT * FROM workspace_onboarding WHERE workspace_id = $1",
+            [workspaceId],
+          ),
         ]);
         if (workspace.rows.length === 0) {
           throw new RepositoryNotFoundError("Workspace not found");
@@ -527,6 +648,7 @@ export class PostgresFollowUpStore implements FollowUpStore {
           settings: settings.rows[0]
             ? mapSettings(settings.rows[0])
             : defaultCandidateSettings,
+          onboarding: mapOnboarding(onboarding.rows[0]),
           storage: "server" as const,
         };
       },
@@ -546,6 +668,11 @@ export class PostgresFollowUpStore implements FollowUpStore {
     const timestamp = now.toISOString();
     await this.transaction(async (client) => {
       await this.requireWorkspace(client, workspaceId);
+      const existing = await client.query(
+        "SELECT id FROM opportunities WHERE workspace_id = $1 LIMIT 1",
+        [workspaceId],
+      );
+      const isFirstOpportunity = existing.rows.length === 0;
       await this.insertOpportunity(
         client,
         workspaceId,
@@ -567,6 +694,26 @@ export class PostgresFollowUpStore implements FollowUpStore {
         { source: prepared.opportunity.source, stage: prepared.opportunity.stage },
         timestamp,
       );
+      if (isFirstOpportunity) {
+        await this.auditOnce(
+          client,
+          workspaceId,
+          "activation.first_opportunity_added",
+          "opportunity",
+          prepared.opportunity.id,
+          {},
+          timestamp,
+        );
+        await this.auditOnce(
+          client,
+          workspaceId,
+          "activation.first_follow_up_generated",
+          "follow_up",
+          prepared.followUp.id,
+          {},
+          timestamp,
+        );
+      }
     });
     return prepared;
   }
@@ -625,6 +772,25 @@ export class PostgresFollowUpStore implements FollowUpStore {
         { status: followUp.status, dueAt: followUp.dueAt },
         timestamp,
       );
+      const registeredAccount = await client.query(
+        `SELECT 1 FROM audit_events
+         WHERE workspace_id = $1 AND event_type = 'activation.account_registered'`,
+        [workspaceId],
+      );
+      if (
+        mutation.action === "mark_sent" &&
+        registeredAccount.rows.length > 0
+      ) {
+        await this.auditOnce(
+          client,
+          workspaceId,
+          "activation.first_follow_up_confirmed",
+          "follow_up",
+          taskId,
+          {},
+          timestamp,
+        );
+      }
       return followUp;
     });
   }
@@ -651,32 +817,100 @@ export class PostgresFollowUpStore implements FollowUpStore {
     return settings;
   }
 
-  private async seedWorkspaceData(
+  async completeOnboarding(
+    workspaceId: string,
+    input: OnboardingInput,
+    now = new Date(),
+  ) {
+    const timestamp = now.toISOString();
+    return this.transaction(async (client) => {
+      await this.requireWorkspace(client, workspaceId);
+      const [onboardingResult, settingsResult] = await Promise.all([
+        client.query(
+          "SELECT completed_at FROM workspace_onboarding WHERE workspace_id = $1 FOR UPDATE",
+          [workspaceId],
+        ),
+        client.query(
+          "SELECT * FROM candidate_settings WHERE workspace_id = $1",
+          [workspaceId],
+        ),
+      ]);
+      const completedAt = onboardingResult.rows[0]?.completed_at
+        ? toIsoString(onboardingResult.rows[0].completed_at)
+        : timestamp;
+      const settings = {
+        ...(settingsResult.rows[0]
+          ? mapSettings(settingsResult.rows[0])
+          : defaultCandidateSettings),
+        targetRoles: input.targetRole,
+        targetCities: input.targetCity,
+      };
+      await client.query(
+        `INSERT INTO workspace_onboarding(
+          workspace_id, target_role, target_city, search_stage,
+          current_opportunity_count, completed_at, updated_at
+        ) VALUES($1, $2, $3, $4, $5, $6, $6)
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          target_role = EXCLUDED.target_role,
+          target_city = EXCLUDED.target_city,
+          search_stage = EXCLUDED.search_stage,
+          current_opportunity_count = EXCLUDED.current_opportunity_count,
+          completed_at = COALESCE(workspace_onboarding.completed_at, EXCLUDED.completed_at),
+          updated_at = EXCLUDED.updated_at`,
+        [
+          workspaceId,
+          input.targetRole,
+          input.targetCity,
+          input.searchStage,
+          input.currentOpportunityCount,
+          timestamp,
+        ],
+      );
+      await this.writeSettings(client, workspaceId, settings, timestamp);
+      await this.auditOnce(
+        client,
+        workspaceId,
+        "activation.onboarding_completed",
+        "workspace_onboarding",
+        workspaceId,
+        {
+          searchStage: input.searchStage,
+          currentOpportunityCount: input.currentOpportunityCount,
+        },
+        timestamp,
+      );
+      return {
+        onboarding: { ...input, completedAt },
+        settings,
+      };
+    });
+  }
+
+  private async initializeAccountWorkspace(
     client: PostgresConnection,
     workspaceId: string,
-    now: Date,
+    timestamp: string,
   ) {
-    const { opportunities, followUps } = createWorkspaceSeed(now, true);
-    const timestamp = now.toISOString();
-    for (const opportunity of opportunities) {
-      await this.insertOpportunity(client, workspaceId, opportunity, timestamp);
-    }
-    for (const followUp of followUps) {
-      await this.insertFollowUp(client, workspaceId, followUp, timestamp);
-    }
     await this.writeSettings(
       client,
       workspaceId,
       defaultCandidateSettings,
       timestamp,
     );
-    await this.audit(
+    await client.query(
+      `INSERT INTO workspace_onboarding(
+        workspace_id, target_role, target_city, search_stage,
+        current_opportunity_count, completed_at, updated_at
+      ) VALUES($1, '', '', 'actively_applying', 0, NULL, $2)`,
+      [workspaceId, timestamp],
+    );
+    await this.auditOnce(
       client,
       workspaceId,
-      "workspace.seeded",
+      "activation.account_registered",
       "workspace",
       workspaceId,
-      { opportunities: opportunities.length, followUps: followUps.length },
+      {},
       timestamp,
     );
   }
@@ -805,6 +1039,31 @@ export class PostgresFollowUpStore implements FollowUpStore {
       `INSERT INTO audit_events(
         workspace_id, event_type, entity_type, entity_id, payload_json, created_at
       ) VALUES($1, $2, $3, $4, $5::jsonb, $6)`,
+      [
+        workspaceId,
+        eventType,
+        entityType,
+        entityId,
+        JSON.stringify(payload),
+        timestamp,
+      ],
+    );
+  }
+
+  private async auditOnce(
+    client: PostgresConnection,
+    workspaceId: string,
+    eventType: string,
+    entityType: string,
+    entityId: string,
+    payload: object,
+    timestamp: string,
+  ) {
+    await client.query(
+      `INSERT INTO audit_events(
+        workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+      ) VALUES($1, $2, $3, $4, $5::jsonb, $6)
+      ON CONFLICT DO NOTHING`,
       [
         workspaceId,
         eventType,

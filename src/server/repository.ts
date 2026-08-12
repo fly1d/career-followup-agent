@@ -9,6 +9,12 @@ import {
 } from "@/data/demo";
 import type { OpportunityStage } from "@/domain/follow-up";
 import {
+  emptyOnboardingProfile,
+  type OnboardingInput,
+  type OnboardingProfile,
+  type SearchStage,
+} from "@/domain/onboarding";
+import {
   defaultCandidateSettings,
   type CandidateSettings,
 } from "@/domain/settings";
@@ -30,6 +36,7 @@ export interface WorkspaceSnapshot {
   followUps: FollowUpTask[];
   opportunities: Opportunity[];
   settings: CandidateSettings;
+  onboarding: OnboardingProfile;
   storage: "server";
 }
 
@@ -205,6 +212,109 @@ const authRateLimitSchema = `
     ON auth_rate_limits(expires_at);
 `;
 
+const onboardingSchema = `
+  CREATE TABLE workspace_onboarding (
+    workspace_id TEXT PRIMARY KEY,
+    target_role TEXT NOT NULL,
+    target_city TEXT NOT NULL,
+    search_stage TEXT NOT NULL,
+    current_opportunity_count INTEGER NOT NULL CHECK(current_opportunity_count >= 0),
+    completed_at TEXT,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+
+  CREATE UNIQUE INDEX activation_events_workspace_type_idx
+    ON audit_events(workspace_id, event_type)
+    WHERE event_type IN (
+      'activation.account_registered',
+      'activation.onboarding_completed',
+      'activation.first_opportunity_added',
+      'activation.first_follow_up_generated',
+      'activation.first_follow_up_confirmed'
+    );
+
+  INSERT OR IGNORE INTO workspace_onboarding(
+    workspace_id, target_role, target_city, search_stage,
+    current_opportunity_count, completed_at, updated_at
+  )
+  SELECT workspaces.id, '', '', 'actively_applying', 0, NULL, workspaces.created_at
+  FROM workspaces
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  );
+
+  INSERT OR IGNORE INTO audit_events(
+    workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+  )
+  SELECT
+    workspaces.id, 'activation.account_registered', 'workspace',
+    workspaces.id, '{}', workspaces.created_at
+  FROM workspaces
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  );
+
+  DELETE FROM opportunities
+  WHERE workspace_id IN (
+    SELECT workspace_id FROM audit_events WHERE event_type = 'workspace.seeded'
+  )
+  AND EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = opportunities.workspace_id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.workspace_id = opportunities.workspace_id
+      AND audit_events.event_type = 'opportunity.created'
+      AND audit_events.entity_id = opportunities.id
+  );
+
+  INSERT OR IGNORE INTO audit_events(
+    workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+  )
+  SELECT
+    workspaces.id, 'activation.first_opportunity_added', 'opportunity',
+    (
+      SELECT opportunities.id FROM opportunities
+      WHERE opportunities.workspace_id = workspaces.id
+      ORDER BY opportunities.created_at, opportunities.id LIMIT 1
+    ),
+    '{}', workspaces.created_at
+  FROM workspaces
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  )
+  AND EXISTS (
+    SELECT 1 FROM opportunities
+    WHERE opportunities.workspace_id = workspaces.id
+  );
+
+  INSERT OR IGNORE INTO audit_events(
+    workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+  )
+  SELECT
+    workspaces.id, 'activation.first_follow_up_generated', 'follow_up',
+    (
+      SELECT follow_up_tasks.id FROM follow_up_tasks
+      WHERE follow_up_tasks.workspace_id = workspaces.id
+      ORDER BY follow_up_tasks.created_at, follow_up_tasks.id LIMIT 1
+    ),
+    '{}', workspaces.created_at
+  FROM workspaces
+  WHERE EXISTS (
+    SELECT 1 FROM workspace_members
+    WHERE workspace_members.workspace_id = workspaces.id
+  )
+  AND EXISTS (
+    SELECT 1 FROM follow_up_tasks
+    WHERE follow_up_tasks.workspace_id = workspaces.id
+  );
+`;
+
 function mapOpportunity(row: DatabaseRow): Opportunity {
   return {
     id: String(row.id),
@@ -259,6 +369,17 @@ function mapSettings(row: DatabaseRow): CandidateSettings {
   };
 }
 
+function mapOnboarding(row?: DatabaseRow): OnboardingProfile {
+  if (!row) return emptyOnboardingProfile;
+  return {
+    targetRole: String(row.target_role),
+    targetCity: String(row.target_city),
+    searchStage: String(row.search_stage) as SearchStage,
+    currentOpportunityCount: Number(row.current_opportunity_count),
+    completedAt: row.completed_at ? String(row.completed_at) : null,
+  };
+}
+
 export class FollowUpRepository {
   constructor(private readonly database: DatabaseSync) {
     this.database.exec("PRAGMA foreign_keys = ON;");
@@ -276,6 +397,7 @@ export class FollowUpRepository {
     this.applyMigration(1, initialSchema);
     this.applyMigration(2, authenticationSchema);
     this.applyMigration(3, authRateLimitSchema);
+    this.applyMigration(4, onboardingSchema);
   }
 
   private applyMigration(version: number, statements: string) {
@@ -353,7 +475,7 @@ export class FollowUpRepository {
              VALUES(?, ?, 'owner', ?)`,
           )
           .run(workspaceId, userId, timestamp);
-        this.seedWorkspaceData(workspaceId, now, true);
+        this.initializeAccountWorkspace(workspaceId, timestamp);
       });
     } catch (error) {
       if (
@@ -527,6 +649,9 @@ export class FollowUpRepository {
     const settingsRow = this.database
       .prepare("SELECT * FROM candidate_settings WHERE workspace_id = ?")
       .get(workspaceId) as DatabaseRow | undefined;
+    const onboardingRow = this.database
+      .prepare("SELECT * FROM workspace_onboarding WHERE workspace_id = ?")
+      .get(workspaceId) as DatabaseRow | undefined;
 
     return {
       opportunities,
@@ -534,6 +659,7 @@ export class FollowUpRepository {
       settings: settingsRow
         ? mapSettings(settingsRow)
         : defaultCandidateSettings,
+      onboarding: mapOnboarding(onboardingRow),
       storage: "server",
     };
   }
@@ -552,6 +678,10 @@ export class FollowUpRepository {
     const { opportunity, followUp } = prepared;
 
     this.transaction(() => {
+      const countRow = this.database
+        .prepare("SELECT COUNT(*) AS count FROM opportunities WHERE workspace_id = ?")
+        .get(workspaceId) as { count: number };
+      const isFirstOpportunity = Number(countRow.count) === 0;
       this.insertOpportunity(workspaceId, opportunity, timestamp);
       this.insertFollowUp(workspaceId, followUp, timestamp);
       this.audit(
@@ -562,6 +692,24 @@ export class FollowUpRepository {
         { source: opportunity.source, stage: opportunity.stage },
         timestamp,
       );
+      if (isFirstOpportunity) {
+        this.auditOnce(
+          workspaceId,
+          "activation.first_opportunity_added",
+          "opportunity",
+          opportunity.id,
+          {},
+          timestamp,
+        );
+        this.auditOnce(
+          workspaceId,
+          "activation.first_follow_up_generated",
+          "follow_up",
+          followUp.id,
+          {},
+          timestamp,
+        );
+      }
     });
 
     return { opportunity, followUp };
@@ -626,6 +774,22 @@ export class FollowUpRepository {
         { status: followUp.status, dueAt: followUp.dueAt },
         timestamp,
       );
+      const registeredAccount = this.database
+        .prepare(
+          `SELECT 1 FROM audit_events
+           WHERE workspace_id = ? AND event_type = 'activation.account_registered'`,
+        )
+        .get(workspaceId);
+      if (mutation.action === "mark_sent" && registeredAccount) {
+        this.auditOnce(
+          workspaceId,
+          "activation.first_follow_up_confirmed",
+          "follow_up",
+          taskId,
+          {},
+          timestamp,
+        );
+      }
     });
 
     const updated = this.database
@@ -653,6 +817,69 @@ export class FollowUpRepository {
       );
     });
     return settings;
+  }
+
+  completeOnboarding(
+    workspaceId: string,
+    input: OnboardingInput,
+    now = new Date(),
+  ) {
+    this.requireWorkspace(workspaceId);
+    const timestamp = now.toISOString();
+    const settings = {
+      ...defaultCandidateSettings,
+      ...this.getWorkspace(workspaceId).settings,
+      targetRoles: input.targetRole,
+      targetCities: input.targetCity,
+    };
+    let onboarding: OnboardingProfile = { ...input, completedAt: timestamp };
+
+    this.transaction(() => {
+      const current = this.database
+        .prepare("SELECT completed_at FROM workspace_onboarding WHERE workspace_id = ?")
+        .get(workspaceId) as DatabaseRow | undefined;
+      const completedAt = current?.completed_at
+        ? String(current.completed_at)
+        : timestamp;
+      this.database
+        .prepare(
+          `INSERT INTO workspace_onboarding(
+            workspace_id, target_role, target_city, search_stage,
+            current_opportunity_count, completed_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(workspace_id) DO UPDATE SET
+            target_role = excluded.target_role,
+            target_city = excluded.target_city,
+            search_stage = excluded.search_stage,
+            current_opportunity_count = excluded.current_opportunity_count,
+            completed_at = COALESCE(workspace_onboarding.completed_at, excluded.completed_at),
+            updated_at = excluded.updated_at`,
+        )
+        .run(
+          workspaceId,
+          input.targetRole,
+          input.targetCity,
+          input.searchStage,
+          input.currentOpportunityCount,
+          timestamp,
+          timestamp,
+        );
+      this.writeSettings(workspaceId, settings, timestamp);
+      this.auditOnce(
+        workspaceId,
+        "activation.onboarding_completed",
+        "workspace_onboarding",
+        workspaceId,
+        {
+          searchStage: input.searchStage,
+          currentOpportunityCount: input.currentOpportunityCount,
+        },
+        timestamp,
+      );
+      onboarding = { ...input, completedAt };
+    });
+
+    return { onboarding, settings };
   }
 
   countAuditEvents(workspaceId: string) {
@@ -687,6 +914,26 @@ export class FollowUpRepository {
       "workspace",
       workspaceId,
       { opportunities: opportunities.length, followUps: followUps.length },
+      timestamp,
+    );
+  }
+
+  private initializeAccountWorkspace(workspaceId: string, timestamp: string) {
+    this.writeSettings(workspaceId, defaultCandidateSettings, timestamp);
+    this.database
+      .prepare(
+        `INSERT INTO workspace_onboarding(
+          workspace_id, target_role, target_city, search_stage,
+          current_opportunity_count, completed_at, updated_at
+        ) VALUES(?, '', '', 'actively_applying', 0, NULL, ?)`,
+      )
+      .run(workspaceId, timestamp);
+    this.auditOnce(
+      workspaceId,
+      "activation.account_registered",
+      "workspace",
+      workspaceId,
+      {},
       timestamp,
     );
   }
@@ -816,6 +1063,30 @@ export class FollowUpRepository {
     this.database
       .prepare(
         `INSERT INTO audit_events(
+          workspace_id, event_type, entity_type, entity_id, payload_json, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        workspaceId,
+        eventType,
+        entityType,
+        entityId,
+        JSON.stringify(payload),
+        timestamp,
+      );
+  }
+
+  private auditOnce(
+    workspaceId: string,
+    eventType: string,
+    entityType: string,
+    entityId: string,
+    payload: object,
+    timestamp: string,
+  ) {
+    this.database
+      .prepare(
+        `INSERT OR IGNORE INTO audit_events(
           workspace_id, event_type, entity_type, entity_id, payload_json, created_at
         ) VALUES(?, ?, ?, ?, ?, ?)`,
       )
