@@ -2,6 +2,7 @@ import { AuthScreen } from "@/components/auth-screen";
 import { Dashboard } from "@/components/dashboard";
 import { getCurrentSession } from "@/server/auth";
 import { getRepository } from "@/server/database";
+import { isPilotAdminUser } from "@/server/pilot-admin";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ export default async function Home() {
     <Dashboard
       initialSnapshot={initialSnapshot}
       user={{ email: session.user.email, displayName: session.user.displayName }}
+      isAdmin={isPilotAdminUser(session.user)}
     />
   );
 }

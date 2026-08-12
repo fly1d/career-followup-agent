@@ -19,6 +19,18 @@ import {
   type CandidateSettings,
 } from "@/domain/settings";
 import {
+  PILOT_CAPACITY,
+  PILOT_DURATION_DAYS,
+  PILOT_OFFER_ID,
+  PILOT_PRICE_CENTS,
+  type PilotAdminOrder,
+  type PilotContactMethod,
+  type PilotEnrollment,
+  type PilotFunnel,
+  type PilotOperationsSnapshot,
+  type PilotRequestInput,
+} from "@/domain/pilot";
+import {
   createWorkspaceSeed,
   prepareFollowUpUpdate,
   prepareNewOpportunity,
@@ -37,6 +49,7 @@ export interface WorkspaceSnapshot {
   opportunities: Opportunity[];
   settings: CandidateSettings;
   onboarding: OnboardingProfile;
+  pilot: PilotEnrollment;
   storage: "server";
 }
 
@@ -315,6 +328,31 @@ const onboardingSchema = `
   );
 `;
 
+const pilotCommerceSchema = `
+  CREATE TABLE pilot_orders (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    offer_id TEXT NOT NULL,
+    contact_method TEXT NOT NULL,
+    contact_value TEXT NOT NULL,
+    note TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending_payment', 'active')),
+    price_cents INTEGER NOT NULL CHECK(price_cents > 0),
+    currency TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    paid_at TEXT,
+    starts_at TEXT,
+    ends_at TEXT,
+    confirmed_by TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(workspace_id, offer_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX pilot_orders_status_requested_idx
+    ON pilot_orders(status, requested_at);
+`;
+
 function mapOpportunity(row: DatabaseRow): Opportunity {
   return {
     id: String(row.id),
@@ -380,6 +418,66 @@ function mapOnboarding(row?: DatabaseRow): OnboardingProfile {
   };
 }
 
+function pilotStatus(
+  row: DatabaseRow | undefined,
+  confirmedCount: number,
+  now: Date,
+): PilotEnrollment["status"] {
+  if (row?.status === "active") {
+    return row.ends_at && String(row.ends_at) <= now.toISOString()
+      ? "expired"
+      : "active";
+  }
+  if (row) {
+    return confirmedCount >= PILOT_CAPACITY ? "full" : "pending_payment";
+  }
+  return confirmedCount >= PILOT_CAPACITY ? "full" : "available";
+}
+
+function mapPilotEnrollment(
+  row: DatabaseRow | undefined,
+  confirmedCount: number,
+  now: Date,
+): PilotEnrollment {
+  return {
+    offerId: PILOT_OFFER_ID,
+    status: pilotStatus(row, confirmedCount, now),
+    orderId: row ? String(row.id) : null,
+    priceCents: PILOT_PRICE_CENTS,
+    currency: "CNY",
+    durationDays: PILOT_DURATION_DAYS,
+    capacity: PILOT_CAPACITY,
+    confirmedCount,
+    requestedAt: row ? String(row.requested_at) : null,
+    startsAt: row?.starts_at ? String(row.starts_at) : null,
+    endsAt: row?.ends_at ? String(row.ends_at) : null,
+  };
+}
+
+function mapPilotAdminOrder(row: DatabaseRow, now: Date): PilotAdminOrder {
+  const expired =
+    row.status === "active" &&
+    row.ends_at &&
+    String(row.ends_at) <= now.toISOString();
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    user: {
+      email: String(row.email),
+      displayName: String(row.display_name),
+    },
+    contactMethod: String(row.contact_method) as PilotContactMethod,
+    contactValue: String(row.contact_value),
+    note: String(row.note),
+    status: expired ? "expired" : String(row.status) as PilotAdminOrder["status"],
+    requestedAt: String(row.requested_at),
+    paidAt: row.paid_at ? String(row.paid_at) : null,
+    startsAt: row.starts_at ? String(row.starts_at) : null,
+    endsAt: row.ends_at ? String(row.ends_at) : null,
+    confirmedBy: row.confirmed_by ? String(row.confirmed_by) : null,
+  };
+}
+
 export class FollowUpRepository {
   constructor(private readonly database: DatabaseSync) {
     this.database.exec("PRAGMA foreign_keys = ON;");
@@ -398,6 +496,7 @@ export class FollowUpRepository {
     this.applyMigration(2, authenticationSchema);
     this.applyMigration(3, authRateLimitSchema);
     this.applyMigration(4, onboardingSchema);
+    this.applyMigration(5, pilotCommerceSchema);
   }
 
   private applyMigration(version: number, statements: string) {
@@ -628,7 +727,7 @@ export class FollowUpRepository {
     this.database.prepare("SELECT 1").get();
   }
 
-  getWorkspace(workspaceId: string): WorkspaceSnapshot {
+  getWorkspace(workspaceId: string, now = new Date()): WorkspaceSnapshot {
     const workspace = this.database
       .prepare("SELECT id FROM workspaces WHERE id = ?")
       .get(workspaceId);
@@ -652,6 +751,12 @@ export class FollowUpRepository {
     const onboardingRow = this.database
       .prepare("SELECT * FROM workspace_onboarding WHERE workspace_id = ?")
       .get(workspaceId) as DatabaseRow | undefined;
+    const pilotRow = this.database
+      .prepare(
+        "SELECT * FROM pilot_orders WHERE workspace_id = ? AND offer_id = ?",
+      )
+      .get(workspaceId, PILOT_OFFER_ID) as DatabaseRow | undefined;
+    const confirmedCount = this.countConfirmedPilotOrders();
 
     return {
       opportunities,
@@ -660,6 +765,7 @@ export class FollowUpRepository {
         ? mapSettings(settingsRow)
         : defaultCandidateSettings,
       onboarding: mapOnboarding(onboardingRow),
+      pilot: mapPilotEnrollment(pilotRow, confirmedCount, now),
       storage: "server",
     };
   }
@@ -882,6 +988,158 @@ export class FollowUpRepository {
     return { onboarding, settings };
   }
 
+  requestPilotEnrollment(
+    workspaceId: string,
+    input: PilotRequestInput,
+    now = new Date(),
+  ): PilotEnrollment {
+    this.requireWorkspace(workspaceId);
+    const timestamp = now.toISOString();
+    let orderId = "";
+
+    this.transaction(() => {
+      const existing = this.database
+        .prepare(
+          "SELECT * FROM pilot_orders WHERE workspace_id = ? AND offer_id = ?",
+        )
+        .get(workspaceId, PILOT_OFFER_ID) as DatabaseRow | undefined;
+      if (existing?.status === "active") {
+        orderId = String(existing.id);
+        return;
+      }
+      if (!existing && this.countConfirmedPilotOrders() >= PILOT_CAPACITY) {
+        throw new RepositoryConflictError("Pilot capacity has been reached");
+      }
+
+      orderId = existing ? String(existing.id) : randomUUID();
+      this.database
+        .prepare(
+          `INSERT INTO pilot_orders(
+            id, workspace_id, offer_id, contact_method, contact_value, note,
+            status, price_cents, currency, requested_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, 'pending_payment', ?, 'CNY', ?, ?)
+          ON CONFLICT(workspace_id, offer_id) DO UPDATE SET
+            contact_method = excluded.contact_method,
+            contact_value = excluded.contact_value,
+            note = excluded.note,
+            updated_at = excluded.updated_at`,
+        )
+        .run(
+          orderId,
+          workspaceId,
+          PILOT_OFFER_ID,
+          input.contactMethod,
+          input.contactValue,
+          input.note,
+          PILOT_PRICE_CENTS,
+          timestamp,
+          timestamp,
+        );
+      if (!existing) {
+        this.audit(
+          workspaceId,
+          "commercial.pilot_requested",
+          "pilot_order",
+          orderId,
+          { offerId: PILOT_OFFER_ID, priceCents: PILOT_PRICE_CENTS },
+          timestamp,
+        );
+      }
+    });
+
+    const row = this.database
+      .prepare("SELECT * FROM pilot_orders WHERE id = ?")
+      .get(orderId) as DatabaseRow;
+    return mapPilotEnrollment(row, this.countConfirmedPilotOrders(), now);
+  }
+
+  getPilotOperations(now = new Date()): PilotOperationsSnapshot {
+    const confirmedCount = this.countConfirmedPilotOrders();
+    const orderRows = this.database
+      .prepare(
+        `SELECT pilot_orders.*, users.email, users.display_name
+         FROM pilot_orders
+         JOIN workspace_members
+           ON workspace_members.workspace_id = pilot_orders.workspace_id
+          AND workspace_members.role = 'owner'
+         JOIN users ON users.id = workspace_members.user_id
+         ORDER BY
+           CASE pilot_orders.status WHEN 'pending_payment' THEN 0 ELSE 1 END,
+           pilot_orders.requested_at ASC`,
+      )
+      .all() as DatabaseRow[];
+    const countEvent = this.database.prepare(
+      "SELECT COUNT(DISTINCT workspace_id) AS count FROM audit_events WHERE event_type = ?",
+    );
+    const funnel: PilotFunnel = {
+      registered: Number(
+        (countEvent.get("activation.account_registered") as DatabaseRow).count,
+      ),
+      onboarded: Number(
+        (countEvent.get("activation.onboarding_completed") as DatabaseRow).count,
+      ),
+      firstOpportunityAdded: Number(
+        (countEvent.get("activation.first_opportunity_added") as DatabaseRow).count,
+      ),
+      firstFollowUpConfirmed: Number(
+        (countEvent.get("activation.first_follow_up_confirmed") as DatabaseRow).count,
+      ),
+      purchaseRequested: orderRows.length,
+      paymentConfirmed: confirmedCount,
+    };
+    return {
+      offer: {
+        offerId: PILOT_OFFER_ID,
+        priceCents: PILOT_PRICE_CENTS,
+        currency: "CNY",
+        durationDays: PILOT_DURATION_DAYS,
+        capacity: PILOT_CAPACITY,
+        confirmedCount,
+        remainingCount: Math.max(0, PILOT_CAPACITY - confirmedCount),
+      },
+      funnel,
+      orders: orderRows.map((row) => mapPilotAdminOrder(row, now)),
+    };
+  }
+
+  confirmPilotPayment(
+    orderId: string,
+    confirmedBy: string,
+    now = new Date(),
+  ): PilotOperationsSnapshot {
+    const timestamp = now.toISOString();
+    const endsAt = new Date(
+      now.getTime() + PILOT_DURATION_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    this.transaction(() => {
+      const order = this.database
+        .prepare("SELECT * FROM pilot_orders WHERE id = ?")
+        .get(orderId) as DatabaseRow | undefined;
+      if (!order) throw new RepositoryNotFoundError("Pilot order not found");
+      if (order.status === "active") return;
+      if (this.countConfirmedPilotOrders() >= PILOT_CAPACITY) {
+        throw new RepositoryConflictError("Pilot capacity has been reached");
+      }
+      this.database
+        .prepare(
+          `UPDATE pilot_orders SET
+            status = 'active', paid_at = ?, starts_at = ?, ends_at = ?,
+            confirmed_by = ?, updated_at = ?
+           WHERE id = ? AND status = 'pending_payment'`,
+        )
+        .run(timestamp, timestamp, endsAt, confirmedBy, timestamp, orderId);
+      this.audit(
+        String(order.workspace_id),
+        "commercial.payment_confirmed",
+        "pilot_order",
+        orderId,
+        { offerId: PILOT_OFFER_ID, endsAt },
+        timestamp,
+      );
+    });
+    return this.getPilotOperations(now);
+  }
+
   countAuditEvents(workspaceId: string) {
     const row = this.database
       .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE workspace_id = ?")
@@ -943,6 +1201,15 @@ export class FollowUpRepository {
       .prepare("SELECT id FROM workspaces WHERE id = ?")
       .get(workspaceId);
     if (!workspace) throw new RepositoryNotFoundError("Workspace not found");
+  }
+
+  private countConfirmedPilotOrders() {
+    const row = this.database
+      .prepare(
+        "SELECT COUNT(*) AS count FROM pilot_orders WHERE status = 'active'",
+      )
+      .get() as DatabaseRow;
+    return Number(row.count);
   }
 
   private insertOpportunity(

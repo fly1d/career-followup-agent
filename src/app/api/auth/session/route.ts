@@ -11,6 +11,7 @@ export async function GET() {
     return Response.json({
       authenticated: true,
       user: {
+        id: session.user.id,
         email: session.user.email,
         displayName: session.user.displayName,
       },

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { searchStages } from "@/domain/onboarding";
+import { pilotContactMethods } from "@/domain/pilot";
 
 const requiredText = (label: string, maximum: number) =>
   z
@@ -45,6 +46,16 @@ export const onboardingSchema = z.object({
   targetCity: requiredText("目标城市", 80),
   searchStage: z.enum(searchStages),
   currentOpportunityCount: z.number().int().min(0).max(500),
+});
+
+export const pilotRequestSchema = z.object({
+  contactMethod: z.enum(pilotContactMethods),
+  contactValue: requiredText("联系方式", 120),
+  note: z.string({ error: "备注必须是文本" }).trim().max(500, "备注过长"),
+});
+
+export const pilotAdminActionSchema = z.object({
+  action: z.literal("confirm_payment"),
 });
 
 export const followUpMutationSchema = z.discriminatedUnion("action", [

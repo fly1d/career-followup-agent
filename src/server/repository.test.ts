@@ -58,7 +58,117 @@ describe("FollowUpRepository", () => {
       { version: 2 },
       { version: 3 },
       { version: 4 },
+      { version: 5 },
     ]);
+  });
+
+  it("records pilot interest and activates 30-day access idempotently", () => {
+    const identity = repository.createAccount({
+      email: "pilot@example.com",
+      displayName: "首批用户",
+      passwordHash: "password-hash",
+    });
+    const requestedAt = new Date("2026-08-12T08:00:00.000Z");
+    const first = repository.requestPilotEnrollment(
+      identity.workspaceId,
+      {
+        contactMethod: "wechat",
+        contactValue: "pilot-wechat",
+        note: "面试后追问",
+      },
+      requestedAt,
+    );
+    const repeated = repository.requestPilotEnrollment(
+      identity.workspaceId,
+      {
+        contactMethod: "phone",
+        contactValue: "13800000000",
+        note: "改用手机联系",
+      },
+      new Date("2026-08-12T09:00:00.000Z"),
+    );
+
+    expect(first.status).toBe("pending_payment");
+    expect(repeated.orderId).toBe(first.orderId);
+    const pendingOperations = repository.getPilotOperations(requestedAt);
+    expect(pendingOperations.funnel).toMatchObject({
+      registered: 1,
+      purchaseRequested: 1,
+      paymentConfirmed: 0,
+    });
+    expect(pendingOperations.orders[0]).toMatchObject({
+      contactMethod: "phone",
+      contactValue: "13800000000",
+      note: "改用手机联系",
+      status: "pending_payment",
+    });
+
+    const paidAt = new Date("2026-08-13T08:00:00.000Z");
+    const activated = repository.confirmPilotPayment(
+      first.orderId!,
+      "admin@example.com",
+      paidAt,
+    );
+    const repeatedConfirmation = repository.confirmPilotPayment(
+      first.orderId!,
+      "other-admin@example.com",
+      new Date("2026-08-13T09:00:00.000Z"),
+    );
+    expect(activated.offer.confirmedCount).toBe(1);
+    expect(repeatedConfirmation.offer.confirmedCount).toBe(1);
+    expect(
+      repository.getWorkspace(identity.workspaceId, paidAt).pilot,
+    ).toMatchObject({
+      status: "active",
+      startsAt: paidAt.toISOString(),
+      endsAt: "2026-09-12T08:00:00.000Z",
+    });
+    expect(
+      repository.getWorkspace(
+        identity.workspaceId,
+        new Date("2026-09-12T08:00:00.000Z"),
+      ).pilot.status,
+    ).toBe("expired");
+    expect(repeatedConfirmation.orders[0].confirmedBy).toBe("admin@example.com");
+    expect(repository.countAuditEvents(identity.workspaceId)).toBe(3);
+  });
+
+  it("caps the first cohort at ten confirmed payments", () => {
+    const requests: Array<{ workspaceId: string; orderId: string }> = [];
+    for (let index = 0; index < 11; index += 1) {
+      const identity = repository.createAccount({
+        email: `capacity-${index}@example.com`,
+        displayName: `名额用户${index}`,
+        passwordHash: "password-hash",
+      });
+      const request = repository.requestPilotEnrollment(identity.workspaceId, {
+        contactMethod: "email",
+        contactValue: `capacity-${index}@example.com`,
+        note: "",
+      });
+      requests.push({
+        workspaceId: identity.workspaceId,
+        orderId: request.orderId!,
+      });
+    }
+    for (const request of requests.slice(0, 10)) {
+      repository.confirmPilotPayment(request.orderId, "admin@example.com");
+    }
+
+    const operations = repository.getPilotOperations();
+    expect(operations.offer).toMatchObject({
+      confirmedCount: 10,
+      remainingCount: 0,
+    });
+    expect(repository.getWorkspace(requests[10].workspaceId).pilot.status).toBe(
+      "full",
+    );
+    expect(() =>
+      repository.confirmPilotPayment(
+        requests[10].orderId,
+        "admin@example.com",
+      ),
+    ).toThrow(RepositoryConflictError);
   });
 
   it("removes legacy seeded records while preserving real account opportunities", () => {

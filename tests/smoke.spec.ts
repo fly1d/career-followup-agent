@@ -57,7 +57,10 @@ async function createTestOpportunity(page: Page, company = "云帆软件") {
   return created;
 }
 
-async function navigate(page: Page, name: "今日" | "机会" | "设置") {
+async function navigate(
+  page: Page,
+  name: "今日" | "机会" | "冲刺版" | "设置",
+) {
   const isMobile = (page.viewportSize()?.width ?? 0) < 820;
   const navigation = page.getByRole("navigation", {
     name: isMobile ? "移动导航" : "主要导航",
@@ -78,13 +81,85 @@ test("requires authentication for private APIs", async ({ request }) => {
       currentOpportunityCount: 0,
     },
   });
+  const pilot = await request.post("/api/pilot", {
+    data: { contactMethod: "wechat", contactValue: "private", note: "" },
+  });
+  const operations = await request.get("/api/admin/pilot");
 
   expect(workspace.status()).toBe(401);
   expect(opportunity.status()).toBe(401);
   expect(onboarding.status()).toBe(401);
+  expect(pilot.status()).toBe(401);
+  expect(operations.status()).toBe(401);
   await expect(workspace.json()).resolves.toMatchObject({
     error: { code: "authentication_required" },
   });
+});
+
+test("submits a pilot request and activates access after admin confirms payment", async ({
+  browser,
+  page,
+}, testInfo) => {
+  const applicant = await register(page, testInfo, "-pilot-applicant");
+  await navigate(page, "冲刺版");
+  await expect(page.getByRole("heading", { name: "求职冲刺版" })).toBeVisible();
+  const layout = await page.evaluate(() => ({
+    overflowX: document.documentElement.scrollWidth > window.innerWidth,
+    headingWidth:
+      document.querySelector(".pilot-page h1")?.getBoundingClientRect().width ?? 0,
+    actionWidth:
+      document.querySelector(".pilot-action-panel")?.getBoundingClientRect().width ?? 0,
+    mobileNavWidths: Array.from(
+      document.querySelectorAll(".mobile-navigation button"),
+    ).map((element) => element.getBoundingClientRect().width),
+  }));
+  expect(layout.overflowX).toBe(false);
+  expect(layout.headingWidth).toBeGreaterThan(160);
+  expect(layout.actionWidth).toBeGreaterThan(300);
+  if ((page.viewportSize()?.width ?? 0) < 820) {
+    expect(layout.mobileNavWidths).toHaveLength(4);
+    expect(Math.min(...layout.mobileNavWidths)).toBeGreaterThan(70);
+  }
+  await page.getByLabel("联系方式").fill(`wx-${testInfo.project.name}`);
+  await page.getByLabel("希望优先解决什么（选填）").fill("面试后的追问节奏");
+  await page.getByRole("button", { name: "申请 99 元冲刺版" }).click();
+  await expect(page.getByRole("heading", { name: "等待人工联系确认" })).toBeVisible();
+
+  const forbidden = await page.request.get("/api/admin/pilot");
+  expect(forbidden.status()).toBe(403);
+
+  const adminContext = await browser.newContext({ baseURL: "http://localhost:3100" });
+  const adminPage = await adminContext.newPage();
+  try {
+    const admin = {
+      displayName: "测试运营员",
+      email: `e2e-admin-${testInfo.project.name}@example.com`,
+      password,
+    };
+    const registration = await adminPage.request.post("/api/auth/register", {
+      data: admin,
+    });
+    expect(registration.status()).toBe(201);
+    await adminPage.goto("/admin");
+    await expect(
+      adminPage.getByRole("heading", { name: "求职冲刺版" }),
+    ).toBeVisible();
+    const applicantRow = adminPage.locator(".order-row", {
+      hasText: applicant.email,
+    });
+    await expect(applicantRow).toContainText(`wx-${testInfo.project.name}`);
+    adminPage.once("dialog", (dialog) => dialog.accept());
+    await applicantRow.getByRole("button", { name: "确认收款" }).click();
+    await expect(adminPage.getByText("收款已确认，30 天权益已经生效。"))
+      .toBeVisible();
+    await expect(applicantRow).toContainText("权益生效");
+  } finally {
+    await adminContext.close();
+  }
+
+  await page.reload();
+  await navigate(page, "冲刺版");
+  await expect(page.getByRole("heading", { name: "冲刺期正在进行" })).toBeVisible();
 });
 
 test("registers through the UI and receives a protected session cookie", async ({
